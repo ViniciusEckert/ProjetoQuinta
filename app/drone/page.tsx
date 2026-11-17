@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  memo,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -37,6 +31,7 @@ import {
   X,
   ZoomIn,
   ZoomOut,
+  ArrowLeft,
 } from "lucide-react";
 
 /* ───────────── Tipos ───────────── */
@@ -192,7 +187,7 @@ function quadrante(x: number, y: number) {
 function criarDeteccao(
   id: number,
   classe: Classe,
-  opts: { hora?: Date; confianca?: number; sincronizado?: boolean } = {}
+  opts: { hora?: Date; confianca?: number; sincronizado?: boolean } = {},
 ): Deteccao {
   const c = CLASSES[classe];
   const jitter = () => (Math.random() - 0.5) * 6;
@@ -201,18 +196,18 @@ function criarDeteccao(
   const confianca = opts.confianca ?? Math.round(62 + Math.random() * 34);
   const textos = TEXTOS[classe];
   const texto = textos[Math.floor(Math.random() * textos.length)](
-    quadrante(x, y)
+    quadrante(x, y),
   );
   const prioridade: Prioridade =
     classe === "pessoa"
       ? "critica"
       : classe === "calor"
-      ? confianca >= 80
-        ? "critica"
-        : "media"
-      : classe === "fumaca"
-      ? "media"
-      : "baixa";
+        ? confianca >= 80
+          ? "critica"
+          : "media"
+        : classe === "fumaca"
+          ? "media"
+          : "baixa";
 
   return {
     id,
@@ -347,7 +342,13 @@ const ROWS = [
   [138, 252],
   [268, 392],
 ];
-const QUADRAS: { x: number; y: number; w: number; h: number; verde: boolean }[] = [];
+const QUADRAS: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  verde: boolean;
+}[] = [];
 COLS.forEach(([x0, x1], ci) =>
   ROWS.forEach(([y0, y1], ri) => {
     if (ci === 1 && ri === 1) return;
@@ -356,7 +357,13 @@ COLS.forEach(([x0, x1], ci) =>
     const seed = ci * 3 + ri;
     const cut = 0.4 + ((seed * 37) % 30) / 100;
     const parque = seed === 0 || seed === 8;
-    QUADRAS.push({ x: x0 + 4, y: y0 + 4, w: w * cut - 8, h: h - 8, verde: parque });
+    QUADRAS.push({
+      x: x0 + 4,
+      y: y0 + 4,
+      w: w * cut - 8,
+      h: h - 8,
+      verde: parque,
+    });
     QUADRAS.push({
       x: x0 + w * cut + 4,
       y: y0 + 4,
@@ -371,7 +378,7 @@ COLS.forEach(([x0, x1], ci) =>
       h: h * 0.4 - 8,
       verde: false,
     });
-  })
+  }),
 );
 
 // Prédios e árvores do bairro monitorado: [x, y, largura, altura]
@@ -444,7 +451,14 @@ const Mundo = memo(function Mundo({
 
       {RUAS.map((r, i) => (
         <g key={i}>
-          <line x1={r.x1} y1={r.y1} x2={r.x2} y2={r.y2} stroke={p.rua} strokeWidth={r.w} />
+          <line
+            x1={r.x1}
+            y1={r.y1}
+            x2={r.x2}
+            y2={r.y2}
+            stroke={p.rua}
+            strokeWidth={r.w}
+          />
           <line
             x1={r.x1}
             y1={r.y1}
@@ -493,7 +507,13 @@ const Mundo = memo(function Mundo({
             strokeWidth={p.borda ? 0.6 : 0}
           />
           {p.topo && (
-            <rect x={x + 1} y={y + 1} width={w - 2} height={h - 2} fill={p.topo} />
+            <rect
+              x={x + 1}
+              y={y + 1}
+              width={w - 2}
+              height={h - 2}
+              fill={p.topo}
+            />
           )}
         </g>
       ))}
@@ -713,9 +733,14 @@ function MapaTatico({
     const down = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const alvo = e.target as HTMLElement | null;
-      if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA")) return;
+      if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA"))
+        return;
       const k = e.key.toLowerCase();
-      if (["arrowup", "arrowdown", "arrowleft", "arrowright", "j", "k"].includes(k)) {
+      if (
+        ["arrowup", "arrowdown", "arrowleft", "arrowright", "j", "k"].includes(
+          k,
+        )
+      ) {
         if (k.startsWith("arrow")) e.preventDefault();
         teclas.add(k);
       }
@@ -733,8 +758,10 @@ function MapaTatico({
       const dt = Math.min(0.05, (agora - ultimo) / 1000);
       ultimo = agora;
 
-      const dx = (teclas.has("arrowright") ? 1 : 0) - (teclas.has("arrowleft") ? 1 : 0);
-      const dy = (teclas.has("arrowdown") ? 1 : 0) - (teclas.has("arrowup") ? 1 : 0);
+      const dx =
+        (teclas.has("arrowright") ? 1 : 0) - (teclas.has("arrowleft") ? 1 : 0);
+      const dy =
+        (teclas.has("arrowdown") ? 1 : 0) - (teclas.has("arrowup") ? 1 : 0);
       const dz = (teclas.has("j") ? 1 : 0) - (teclas.has("k") ? 1 : 0);
 
       if (dx || dy || dz) {
@@ -748,7 +775,7 @@ function MapaTatico({
             ...ajustarCam(
               mexeu ? baseX + dx * v : c.cx,
               mexeu ? baseY + dy * v : c.cy,
-              c.z * Math.exp(dz * dt * 1.1)
+              c.z * Math.exp(dz * dt * 1.1),
             ),
             seguir: mexeu ? false : c.seguir,
           };
@@ -796,8 +823,7 @@ function MapaTatico({
             <kbd className={kbd}>↓</kbd>
             <kbd className={kbd}>→</kbd>
           </span>
-          mover mapa ·
-          <kbd className={kbd}>J</kbd> aproximar ·
+          mover mapa ·<kbd className={kbd}>J</kbd> aproximar ·
           <kbd className={kbd}>K</kbd> afastar
         </p>
       </div>
@@ -847,10 +873,20 @@ function MapaTatico({
                     fill={c.cor}
                     fillOpacity="0.18"
                   />
-                  <circle r="5" fill={c.cor} stroke="#0f172a" strokeWidth="1.5" />
+                  <circle
+                    r="5"
+                    fill={c.cor}
+                    stroke="#0f172a"
+                    strokeWidth="1.5"
+                  />
                   {ativa && (
                     <>
-                      <circle r="10" fill="none" stroke="#fff" strokeWidth="1.5" />
+                      <circle
+                        r="10"
+                        fill="none"
+                        stroke="#fff"
+                        strokeWidth="1.5"
+                      />
                       <text
                         x="14"
                         y="-12"
@@ -875,8 +911,18 @@ function MapaTatico({
             <g transform={`scale(${esc})`}>
               {online && (
                 <circle r="8" fill="none" stroke="#38bdf8" strokeWidth="1.5">
-                  <animate attributeName="r" values="8;20" dur="1.8s" repeatCount="indefinite" />
-                  <animate attributeName="opacity" values="0.8;0" dur="1.8s" repeatCount="indefinite" />
+                  <animate
+                    attributeName="r"
+                    values="8;20"
+                    dur="1.8s"
+                    repeatCount="indefinite"
+                  />
+                  <animate
+                    attributeName="opacity"
+                    values="0.8;0"
+                    dur="1.8s"
+                    repeatCount="indefinite"
+                  />
                 </circle>
               )}
               <path
@@ -921,16 +967,16 @@ function MapaTatico({
         {/* sobreposições */}
         <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-md bg-black/60 px-2 py-1 font-mono text-[11px] text-slate-200 backdrop-blur">
           zoom {vista.z.toFixed(1)}x
-          {cam.seguir && (
-            <span className="text-sky-300">· seguindo drone</span>
-          )}
+          {cam.seguir && <span className="text-sky-300">· seguindo drone</span>}
         </div>
 
         <div className="absolute right-3 top-3 flex flex-col gap-1.5">
           <button
             aria-label="Aproximar"
             title="Aproximar (J)"
-            onClick={() => setCam((c) => ({ ...c, ...ajustarCam(c.cx, c.cy, c.z * 1.25) }))}
+            onClick={() =>
+              setCam((c) => ({ ...c, ...ajustarCam(c.cx, c.cy, c.z * 1.25) }))
+            }
             className={botao}
           >
             <ZoomIn className="h-4 w-4" />
@@ -938,7 +984,9 @@ function MapaTatico({
           <button
             aria-label="Afastar"
             title="Afastar (K)"
-            onClick={() => setCam((c) => ({ ...c, ...ajustarCam(c.cx, c.cy, c.z / 1.25) }))}
+            onClick={() =>
+              setCam((c) => ({ ...c, ...ajustarCam(c.cx, c.cy, c.z / 1.25) }))
+            }
             className={botao}
           >
             <ZoomOut className="h-4 w-4" />
@@ -1000,29 +1048,57 @@ function lerSessao() {
   }
 }
 
+const DRONE_KEY = "diapb_drone";
+
+function lerDrone() {
+  try {
+    return localStorage.getItem(DRONE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 /* ───────────── Página: verifica o login e renderiza o painel ───────────── */
 
 export default function DronePage() {
   const router = useRouter();
   const sessao = useSyncExternalStore(assinar, lerSessao, () => null);
+  const selecao = useSyncExternalStore(assinar, lerDrone, () => null);
 
   useEffect(() => {
     if (!lerSessao()) router.replace("/login");
+    else if (!lerDrone()) router.replace("/drones");
   }, [router]);
 
-  if (!sessao) return <div className="min-h-screen bg-slate-950" />;
+  if (!sessao || !selecao) return <div className="min-h-screen bg-slate-950" />;
 
   let cpf = "";
   try {
     cpf = JSON.parse(sessao).cpf ?? "";
   } catch {}
 
-  return <Painel cpf={cpf} />;
+  let droneId = "DR-01";
+  let droneTipo = "";
+  try {
+    const s = JSON.parse(selecao);
+    droneId = s.id ?? droneId;
+    droneTipo = s.tipo ?? "";
+  } catch {}
+
+  return <Painel cpf={cpf} droneId={droneId} droneTipo={droneTipo} />;
 }
 
 /* ───────────── Painel do drone ───────────── */
 
-function Painel({ cpf }: { cpf: string }) {
+function Painel({
+  cpf,
+  droneId,
+  droneTipo,
+}: {
+  cpf: string;
+  droneId: string;
+  droneTipo: string;
+}) {
   const router = useRouter();
 
   const [agora, setAgora] = useState<Date>(() => new Date());
@@ -1052,10 +1128,19 @@ function Painel({ cpf }: { cpf: string }) {
   const [deteccoes, setDeteccoes] = useState<Deteccao[]>(() => {
     const base = Date.now();
     return [
-      criarDeteccao(4, "obstaculo", { hora: new Date(base - 1000), confianca: 73 }),
-      criarDeteccao(3, "pessoa", { hora: new Date(base - 4000), confianca: 84 }),
+      criarDeteccao(4, "obstaculo", {
+        hora: new Date(base - 1000),
+        confianca: 73,
+      }),
+      criarDeteccao(3, "pessoa", {
+        hora: new Date(base - 4000),
+        confianca: 84,
+      }),
       criarDeteccao(2, "calor", { hora: new Date(base - 9000), confianca: 91 }),
-      criarDeteccao(1, "fumaca", { hora: new Date(base - 14000), confianca: 78 }),
+      criarDeteccao(1, "fumaca", {
+        hora: new Date(base - 14000),
+        confianca: 78,
+      }),
     ];
   });
   const [selecionada, setSelecionada] = useState<number | null>(null);
@@ -1078,7 +1163,8 @@ function Painel({ cpf }: { cpf: string }) {
     const down = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const alvo = e.target as HTMLElement | null;
-      if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA")) return;
+      if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA"))
+        return;
       const k = e.key.toLowerCase();
       if (!["w", "a", "s", "d"].includes(k)) return;
       teclas.current.add(k);
@@ -1147,10 +1233,18 @@ function Painel({ cpf }: { cpf: string }) {
             const a = CLASSES[d.classe].ancora;
             return {
               ...d,
-              x: clamp(d.x + (a.x - d.x) * 0.08 + (Math.random() - 0.5) * 0.9, 8, 92),
-              y: clamp(d.y + (a.y - d.y) * 0.08 + (Math.random() - 0.5) * 0.9, 10, 90),
+              x: clamp(
+                d.x + (a.x - d.x) * 0.08 + (Math.random() - 0.5) * 0.9,
+                8,
+                92,
+              ),
+              y: clamp(
+                d.y + (a.y - d.y) * 0.08 + (Math.random() - 0.5) * 0.9,
+                10,
+                90,
+              ),
             };
-          })
+          }),
         );
 
         if (n % 7 === 0) {
@@ -1173,6 +1267,13 @@ function Painel({ cpf }: { cpf: string }) {
     router.push("/login");
   }
 
+  function trocarDrone() {
+    try {
+      localStorage.removeItem(DRONE_KEY);
+    } catch {}
+    router.push("/drones");
+  }
+
   function simularQueda() {
     setSemDados(0);
     setPendentesBuffer(0);
@@ -1184,7 +1285,9 @@ function Painel({ cpf }: { cpf: string }) {
     setConexao("sincronizando");
     syncTimeout.current = setTimeout(() => {
       const recuperadas = Array.from({ length: qtd }, () =>
-        criarDeteccao(proxId.current++, classeAleatoria(), { sincronizado: true })
+        criarDeteccao(proxId.current++, classeAleatoria(), {
+          sincronizado: true,
+        }),
       );
       setDeteccoes((prev) => [...recuperadas, ...prev].slice(0, 30));
       setPendentesBuffer(0);
@@ -1214,7 +1317,9 @@ function Painel({ cpf }: { cpf: string }) {
   }
 
   function definirStatus(id: number, status: Status) {
-    setDeteccoes((prev) => prev.map((d) => (d.id === id ? { ...d, status } : d)));
+    setDeteccoes((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, status } : d)),
+    );
   }
 
   function selecionar(id: number) {
@@ -1243,7 +1348,9 @@ function Painel({ cpf }: { cpf: string }) {
       ? deteccoes.filter((d) => d.status === "pendente")
       : deteccoes;
 
-  const cpfMascarado = cpf ? `${cpf.slice(0, 3)}.***.***-${cpf.slice(-2)}` : "—";
+  const cpfMascarado = cpf
+    ? `${cpf.slice(0, 3)}.***.***-${cpf.slice(-2)}`
+    : "—";
 
   const banner = {
     online: {
@@ -1300,7 +1407,10 @@ function Painel({ cpf }: { cpf: string }) {
           </div>
           <div className="leading-tight">
             <p className="font-semibold tracking-tight">DIAPB</p>
-            <p className="text-xs text-slate-400">Missão #0147 · Drone DR-01</p>
+            <p className="text-xs text-slate-400">
+              Missão #0147 · {droneId}
+              {droneTipo ? ` · ${droneTipo}` : ""}
+            </p>
           </div>
           <span className="ml-2 rounded-full border border-violet-400/30 bg-violet-500/10 px-2 py-0.5 text-[11px] font-medium text-violet-300">
             Simulado
@@ -1316,6 +1426,12 @@ function Painel({ cpf }: { cpf: string }) {
             className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 transition hover:border-slate-500 hover:text-white"
           >
             <LogOut className="h-4 w-4" /> Sair
+          </button>
+          <button
+            onClick={trocarDrone}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 transition hover:border-slate-500 hover:text-white"
+          >
+            <ArrowLeft className="h-4 w-4" /> Trocar drone
           </button>
         </div>
       </header>
@@ -1483,7 +1599,8 @@ function Painel({ cpf }: { cpf: string }) {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="min-w-[14rem] flex-1">
                 <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
-                  <Gamepad2 className="h-4 w-4 text-sky-400" /> Controle do drone
+                  <Gamepad2 className="h-4 w-4 text-sky-400" /> Controle do
+                  drone
                 </h3>
                 <div className="flex gap-1 rounded-lg bg-slate-950 p-1 text-xs">
                   {MODOS.map(({ id, rotulo, Icon }) => (
@@ -1521,7 +1638,9 @@ function Painel({ cpf }: { cpf: string }) {
               <div className="min-w-[8rem] space-y-1 font-mono text-xs text-slate-400">
                 <p>
                   Velocidade{" "}
-                  <span className="text-slate-100">{velocidade.toFixed(1)} m/s</span>
+                  <span className="text-slate-100">
+                    {velocidade.toFixed(1)} m/s
+                  </span>
                 </p>
                 <p>
                   Posição{" "}
@@ -1596,7 +1715,9 @@ function Painel({ cpf }: { cpf: string }) {
                 } ${online ? "" : "opacity-50"}`}
               >
                 <div className="mb-1 flex items-center gap-1.5 text-xs text-slate-400">
-                  <Icon className={`h-3.5 w-3.5 ${alerta ? "text-red-400" : ""}`} />
+                  <Icon
+                    className={`h-3.5 w-3.5 ${alerta ? "text-red-400" : ""}`}
+                  />
                   {label}
                 </div>
                 <p

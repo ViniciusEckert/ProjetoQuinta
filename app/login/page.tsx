@@ -45,7 +45,7 @@ export default function LoginPage() {
           JSON.stringify({ cpf, entrouEm: new Date().toISOString() })
         );
       } catch {}
-      router.push("/drone");
+      router.push("/drones");
     }, 700);
   }
 
