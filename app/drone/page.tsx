@@ -430,34 +430,54 @@ interface Paleta {
   borda?: string;
   parque: string;
   arvore: string;
+  calcada: string;
+  faixa: string;
+  agua: string;
+  copa: string;
+  sombra: string;
 }
 
 const PALETA_MAPA: Paleta = {
   fundo: "#0f1f18",
   rua: "#273244",
-  centro: "#475569",
+  centro: "#566377",
   predio: "#1b2636",
   borda: "#2a3a50",
   parque: "#143325",
-  arvore: "#1a4a33",
+  arvore: "#14452f",
+  calcada: "#334155",
+  faixa: "#64748b",
+  agua: "#0b3b5a",
+  copa: "#1f6b47",
+  sombra: "rgba(0,0,0,0.35)",
 };
 const PALETA_RGB: Paleta = {
-  fundo: "#27402f",
-  rua: "#4b5563",
-  centro: "#9ca3af",
+  fundo: "#35523a",
+  rua: "#3d424b",
+  centro: "#e4c34a",
   predio: "#6b7280",
   topo: "#94a3b8",
-  parque: "#2f4d38",
+  parque: "#3c6b45",
   arvore: "#1f5130",
+  calcada: "#9a9a94",
+  faixa: "#d1d5db",
+  agua: "#3b82a6",
+  copa: "#2f7a45",
+  sombra: "rgba(0,0,0,0.38)",
 };
 const PALETA_TERMICA: Paleta = {
   fundo: "#0b0820",
-  rua: "#1b1740",
+  rua: "#17133a",
   centro: "#241f55",
   predio: "#2a1f5e",
   topo: "#33266f",
   parque: "#120c33",
   arvore: "#16123d",
+  calcada: "#1d1848",
+  faixa: "#2c2766",
+  agua: "#09163a",
+  copa: "#1b1648",
+  sombra: "rgba(0,0,0,0.3)",
 };
 
 const RUAS = [
@@ -552,13 +572,168 @@ const ARVORES: [number, number][] = [
   [372, 236],
 ];
 
+const hash = (n: number) => {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+};
+
+// árvores dos dois parques (geradas uma vez)
+const ARVORES_PARQUE: [number, number, number][] = [];
+[
+  [14, 14, 92, 116],
+  [574, 274, 710, 386],
+].forEach(([x0, y0, x1, y1], pi) => {
+  for (let i = 0; i < 18; i++) {
+    const x = x0 + 6 + hash(pi * 100 + i) * (x1 - x0 - 12);
+    const y = y0 + 6 + hash(pi * 100 + i + 50) * (y1 - y0 - 12);
+    if (pi === 0 && ((x - 52) / 24) ** 2 + ((y - 72) / 16) ** 2 < 1) continue; // lago
+    ARVORES_PARQUE.push([x, y, 2.6 + hash(i + pi * 7) * 1.8]);
+  }
+});
+
+// prédios de cada quadra, divididos ao longo do lado maior
+const PREDIOS_QUADRA: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  i: number;
+}[] = [];
+QUADRAS.forEach((q, qi) => {
+  if (q.verde) return;
+  const horiz = q.w >= q.h;
+  const n = clamp(Math.round((horiz ? q.w : q.h) / 34), 1, 5);
+  for (let k = 0; k < n; k++) {
+    if (horiz) {
+      const w = q.w / n;
+      PREDIOS_QUADRA.push({
+        x: q.x + k * w + 0.7,
+        y: q.y,
+        w: w - 1.4,
+        h: q.h,
+        i: qi * 7 + k,
+      });
+    } else {
+      const h = q.h / n;
+      PREDIOS_QUADRA.push({
+        x: q.x,
+        y: q.y + k * h + 0.7,
+        w: q.w,
+        h: h - 1.4,
+        i: qi * 7 + k,
+      });
+    }
+  }
+});
+
+const ZEBRAS = [
+  [240, 130],
+  [560, 130],
+  [240, 260],
+  [560, 260],
+];
+
+function Predio({
+  x,
+  y,
+  w,
+  h,
+  i,
+  p,
+}: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  i: number;
+  p: Paleta;
+}) {
+  const s = 1.8 * (0.7 + hash(i) * 1.1); // sombra proporcional à "altura"
+  return (
+    <g>
+      <rect x={x + s} y={y + s} width={w} height={h} fill={p.sombra} />
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        fill={p.predio}
+        stroke={p.borda}
+        strokeWidth={p.borda ? 0.5 : 0}
+      />
+      {p.topo && (
+        <rect
+          x={x + 0.8}
+          y={y + 0.8}
+          width={w - 1.6}
+          height={h - 1.6}
+          fill={p.topo}
+        />
+      )}
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        fill="#000"
+        opacity={0.03 + hash(i + 9) * 0.16}
+      />
+      <rect
+        x={x + w * 0.18}
+        y={y + h * 0.22}
+        width={Math.min(4, w * 0.28)}
+        height={Math.min(3, h * 0.24)}
+        fill={p.predio}
+        stroke="#0004"
+        strokeWidth="0.3"
+      />
+    </g>
+  );
+}
+
+function Arvore({
+  x,
+  y,
+  r,
+  p,
+}: {
+  x: number;
+  y: number;
+  r: number;
+  p: Paleta;
+}) {
+  return (
+    <g>
+      <ellipse
+        cx={x + r * 0.45}
+        cy={y + r * 0.45}
+        rx={r}
+        ry={r * 0.9}
+        fill={p.sombra}
+      />
+      <circle cx={x} cy={y} r={r} fill={p.arvore} />
+      <circle cx={x - r * 0.15} cy={y - r * 0.15} r={r * 0.78} fill={p.copa} />
+    </g>
+  );
+}
+
 const Mundo = memo(function Mundo({
   p,
   grade,
+  rotulos,
 }: {
   p: Paleta;
   grade?: boolean;
+  rotulos?: boolean;
 }) {
+  const txt = {
+    fill: "#e2e8f0",
+    stroke: "#0f172a",
+    strokeWidth: 1.6,
+    paintOrder: "stroke",
+    fontWeight: 600,
+  } as const;
+
   return (
     <g>
       <rect x="0" y="0" width={MAP_W} height={MAP_H} fill={p.fundo} />
@@ -590,78 +765,219 @@ const Mundo = memo(function Mundo({
           />
         ))}
 
-      {RUAS.map((r, i) => (
-        <g key={i}>
-          <line
-            x1={r.x1}
-            y1={r.y1}
-            x2={r.x2}
-            y2={r.y2}
-            stroke={p.rua}
-            strokeWidth={r.w}
-          />
-          <line
-            x1={r.x1}
-            y1={r.y1}
-            x2={r.x2}
-            y2={r.y2}
-            stroke={p.centro}
-            strokeWidth={r.w * 0.05}
-            strokeDasharray={`${r.w * 0.4} ${r.w * 0.4}`}
-          />
-        </g>
-      ))}
-
+      {/* lotes e parques */}
       {QUADRAS.map((q, i) => (
-        <g key={i}>
-          <rect
-            x={q.x}
-            y={q.y}
-            width={q.w}
-            height={q.h}
-            rx="2"
-            fill={q.verde ? p.parque : p.predio}
-            stroke={p.borda}
-            strokeWidth={p.borda ? 0.8 : 0}
-          />
-          {p.topo && !q.verde && (
-            <rect
-              x={q.x + 2}
-              y={q.y + 2}
-              width={q.w - 4}
-              height={q.h - 4}
-              fill={p.topo}
+        <rect
+          key={i}
+          x={q.x}
+          y={q.y}
+          width={q.w}
+          height={q.h}
+          rx="2"
+          fill={q.verde ? p.parque : p.calcada}
+          stroke={p.borda}
+          strokeWidth={p.borda ? 0.6 : 0}
+        />
+      ))}
+
+      {/* lago */}
+      <ellipse cx="52" cy="72" rx="22" ry="14" fill={p.agua} />
+      <ellipse
+        cx="52"
+        cy="72"
+        rx="22"
+        ry="14"
+        fill="none"
+        stroke={p.copa}
+        strokeWidth="1"
+        opacity="0.5"
+      />
+      <ellipse cx="46" cy="68" rx="9" ry="4" fill="#fff" opacity="0.12" />
+
+      {/* calçadas */}
+      {RUAS.map((r, i) => (
+        <line
+          key={`c${i}`}
+          x1={r.x1}
+          y1={r.y1}
+          x2={r.x2}
+          y2={r.y2}
+          stroke={p.calcada}
+          strokeWidth={r.w + 5}
+        />
+      ))}
+
+      {/* asfalto, bordas e faixa central */}
+      {RUAS.map((r, i) => {
+        const h = ehHoriz(r);
+        const o = r.w / 2 - 0.9;
+        const l1 = h
+          ? { x1: r.x1, y1: r.y1 - o, x2: r.x2, y2: r.y2 - o }
+          : { x1: r.x1 - o, y1: r.y1, x2: r.x2 - o, y2: r.y2 };
+        const l2 = h
+          ? { x1: r.x1, y1: r.y1 + o, x2: r.x2, y2: r.y2 + o }
+          : { x1: r.x1 + o, y1: r.y1, x2: r.x2 + o, y2: r.y2 };
+        return (
+          <g key={`r${i}`}>
+            <line
+              x1={r.x1}
+              y1={r.y1}
+              x2={r.x2}
+              y2={r.y2}
+              stroke={p.rua}
+              strokeWidth={r.w}
             />
+            {r.w >= 6 && (
+              <>
+                <line {...l1} stroke={p.faixa} strokeWidth="0.35" />
+                <line {...l2} stroke={p.faixa} strokeWidth="0.35" />
+              </>
+            )}
+            <line
+              x1={r.x1}
+              y1={r.y1}
+              x2={r.x2}
+              y2={r.y2}
+              stroke={p.centro}
+              strokeWidth={Math.max(0.3, r.w * 0.04)}
+              strokeDasharray={`${r.w * 0.4} ${r.w * 0.4}`}
+            />
+          </g>
+        );
+      })}
+
+      {/* faixas de pedestres nos cruzamentos */}
+      {ZEBRAS.map(([cx, cy], zi) => (
+        <g key={zi} fill={p.faixa} opacity="0.85">
+          {[-1, 1].flatMap((s) =>
+            Array.from({ length: 5 }, (_, k) => (
+              <g key={`${s}${k}`}>
+                <rect
+                  x={cx + s * 12 - 1}
+                  y={cy - 5 + k * 2.4}
+                  width="2"
+                  height="1.2"
+                />
+                <rect
+                  x={cx - 5 + k * 2.4}
+                  y={cy + s * 12 - 1}
+                  width="1.2"
+                  height="2"
+                />
+              </g>
+            )),
           )}
         </g>
       ))}
 
+      {/* prédios */}
+      {PREDIOS_QUADRA.map((b) => (
+        <Predio key={`q${b.i}`} {...b} p={p} />
+      ))}
       {PREDIOS_LOCAIS.map(([x, y, w, h], i) => (
-        <g key={i}>
-          <rect
-            x={x}
-            y={y}
-            width={w}
-            height={h}
-            fill={p.predio}
-            stroke={p.borda}
-            strokeWidth={p.borda ? 0.6 : 0}
-          />
-          {p.topo && (
-            <rect
-              x={x + 1}
-              y={y + 1}
-              width={w - 2}
-              height={h - 2}
-              fill={p.topo}
-            />
-          )}
-        </g>
+        <Predio key={`l${i}`} x={x} y={y} w={w} h={h} i={100 + i} p={p} />
       ))}
 
-      {ARVORES.map(([cx, cy], i) => (
-        <circle key={i} cx={cx} cy={cy} r="3.5" fill={p.arvore} />
+      {/* hospital (cruz no telhado) */}
+      <rect
+        x="615"
+        y="54"
+        width="22"
+        height="22"
+        rx="2"
+        fill="#fff"
+        opacity="0.9"
+      />
+      <rect x="624" y="57" width="4" height="16" fill="#dc2626" />
+      <rect x="618" y="63" width="16" height="4" fill="#dc2626" />
+
+      {/* heliponto da base */}
+      <circle
+        cx={HOME.x}
+        cy={HOME.y}
+        r="5"
+        fill="#1f2937"
+        stroke="#facc15"
+        strokeWidth="0.5"
+      />
+      <text
+        x={HOME.x}
+        y={HOME.y + 2}
+        textAnchor="middle"
+        fontSize="6"
+        fontWeight="700"
+        fill="#facc15"
+      >
+        H
+      </text>
+
+      {/* árvores */}
+      {ARVORES.map(([x, y], i) => (
+        <Arvore key={`a${i}`} x={x} y={y} r={3.5} p={p} />
       ))}
+      {ARVORES_PARQUE.map(([x, y, r], i) => (
+        <Arvore key={`p${i}`} x={x} y={y} r={r} p={p} />
+      ))}
+
+      {/* nomes (só no mapa) */}
+      {rotulos && (
+        <g fontSize="6" letterSpacing="0.6">
+          <text x="140" y="132" {...txt}>
+            AV. CENTRAL
+          </text>
+          <text x="660" y="132" {...txt}>
+            AV. CENTRAL
+          </text>
+          <text x="150" y="262" {...txt}>
+            R. DAS FLORES
+          </text>
+          <text x="640" y="262" {...txt}>
+            R. DAS FLORES
+          </text>
+          <text
+            transform="translate(242 60) rotate(-90)"
+            textAnchor="middle"
+            {...txt}
+          >
+            R. PARANÁ
+          </text>
+          <text
+            transform="translate(242 330) rotate(-90)"
+            textAnchor="middle"
+            {...txt}
+          >
+            R. PARANÁ
+          </text>
+          <text
+            transform="translate(562 60) rotate(-90)"
+            textAnchor="middle"
+            {...txt}
+          >
+            AV. BRASIL
+          </text>
+          <text
+            transform="translate(562 330) rotate(-90)"
+            textAnchor="middle"
+            {...txt}
+          >
+            AV. BRASIL
+          </text>
+          <g fontSize="5">
+            <text x="626" y="88" textAnchor="middle" {...txt}>
+              Hospital Municipal
+            </text>
+            <text x="68" y="332" textAnchor="middle" {...txt}>
+              Escola Municipal
+            </text>
+            <text x="52" y="100" textAnchor="middle" {...txt}>
+              Parque
+            </text>
+            <text x={HOME.x} y={HOME.y - 8} textAnchor="middle" {...txt}>
+              Base DIAPB
+            </text>
+          </g>
+        </g>
+      )}
     </g>
   );
 });
@@ -906,62 +1222,198 @@ function passoVoo(
 
 /* ───────────── Vídeo: visão aérea recortada na posição do drone ───────────── */
 
-const COR_VEICULO = ["#e5e7eb", "#b91c1c", "#1d4ed8", "#facc15", "#1f2937"];
-const COR_PESSOA = ["#fca5a5", "#93c5fd", "#fde68a", "#a7f3d0"];
+const CARROS = [
+  "#e5e7eb",
+  "#b91c1c",
+  "#1d4ed8",
+  "#facc15",
+  "#1f2937",
+  "#16a34a",
+];
+const CAMISAS = [
+  "#ef4444",
+  "#3b82f6",
+  "#22c55e",
+  "#f59e0b",
+  "#a855f7",
+  "#e5e7eb",
+];
+const CABELOS = ["#1f2937", "#78350f", "#d6b88a", "#111827"];
 
-function EntidadeSvg({ e, t }: { e: Entidade; t: boolean }) {
+function EntidadeSvg({
+  e,
+  t,
+  pausado,
+}: {
+  e: Entidade;
+  t: boolean;
+  pausado: boolean;
+}) {
+  const horiz = ehHoriz(RUAS[e.rua]);
+  const ang = horiz ? (e.dir === 1 ? 0 : 180) : e.dir === 1 ? 90 : 270;
+
+  /* ── Veículo, visto de cima ── */
   if (e.tipo === "veiculo") {
-    const horiz = ehHoriz(RUAS[e.rua]);
-    const w = horiz ? 4.4 : 2.2;
-    const h = horiz ? 2.2 : 4.4;
+    const van = e.id % 4 === 3;
+    const L = van ? 5.6 : 4.4;
+    const W = van ? 2.4 : 2.1;
+    const cor = t ? "#3b2f7a" : CARROS[e.id % CARROS.length];
     return (
-      <g>
+      <g transform={`translate(${e.x} ${e.y}) rotate(${ang})`}>
         <rect
-          x={e.x - w / 2}
-          y={e.y - h / 2}
-          width={w}
-          height={h}
-          rx="0.5"
-          fill={t ? "#3b2f7a" : COR_VEICULO[e.id % COR_VEICULO.length]}
+          x={-L / 2 + 0.5}
+          y={-W / 2 + 0.5}
+          width={L}
+          height={W}
+          rx="0.6"
+          fill="rgba(0,0,0,0.35)"
         />
-        {t && (
-          <circle
-            cx={e.x + (horiz ? e.dir * 1.3 : 0)}
-            cy={e.y + (horiz ? 0 : e.dir * 1.3)}
-            r="1.5"
-            fill="url(#body)"
-          />
+        <rect x={-L / 2} y={-W / 2} width={L} height={W} rx="0.7" fill={cor} />
+        {!t && (
+          <>
+            <rect
+              x={L * 0.08}
+              y={-W / 2 + 0.25}
+              width={L * 0.2}
+              height={W - 0.5}
+              rx="0.3"
+              fill="#0f172a"
+              opacity="0.75"
+            />
+            <rect
+              x={-L * 0.34}
+              y={-W / 2 + 0.3}
+              width={L * 0.18}
+              height={W - 0.6}
+              rx="0.3"
+              fill="#0f172a"
+              opacity="0.6"
+            />
+            <rect
+              x={-L * 0.12}
+              y={-W / 2 + 0.2}
+              width={L * 0.18}
+              height={W - 0.4}
+              fill="#fff"
+              opacity="0.12"
+            />
+            <rect
+              x={L / 2 - 0.35}
+              y={-W / 2 + 0.2}
+              width="0.35"
+              height="0.45"
+              fill="#fef9c3"
+            />
+            <rect
+              x={L / 2 - 0.35}
+              y={W / 2 - 0.65}
+              width="0.35"
+              height="0.45"
+              fill="#fef9c3"
+            />
+            <rect
+              x={-L / 2}
+              y={-W / 2 + 0.2}
+              width="0.3"
+              height="0.45"
+              fill="#ef4444"
+            />
+            <rect
+              x={-L / 2}
+              y={W / 2 - 0.65}
+              width="0.3"
+              height="0.45"
+              fill="#ef4444"
+            />
+          </>
         )}
+        {t && <circle cx={L * 0.3} cy="0" r="1.8" fill="url(#body)" />}
       </g>
     );
   }
 
+  /* ── Pessoa, vista de cima ── */
   const deitado = e.tipo === "ferido";
-  const corpo = t ? "#fde68a" : COR_PESSOA[e.id % COR_PESSOA.length];
+  const andando = !deitado && e.v > 0;
+  const camisa = t
+    ? "#fb923c"
+    : e.tipo === "armado"
+      ? "#1f2937"
+      : CAMISAS[e.id % CAMISAS.length];
+  const cabelo = t ? "#fff7ae" : CABELOS[e.id % CABELOS.length];
+  const pele = t ? "#fde68a" : "#e8b894";
+  const ani = (reverso: boolean) => ({
+    animation: `swing 0.7s ease-in-out infinite alternate${reverso ? "-reverse" : ""}`,
+    animationPlayState: pausado ? ("paused" as const) : ("running" as const),
+  });
+
   return (
-    <g>
-      {t && <circle cx={e.x} cy={e.y} r="2.6" fill="url(#body)" />}
+    <g
+      transform={`translate(${e.x} ${e.y}) rotate(${deitado ? 20 : ang}) scale(1.3)`}
+    >
+      {t && <circle r="2.6" fill="url(#body)" />}
       {deitado ? (
-        <ellipse cx={e.x} cy={e.y} rx="1.4" ry="0.55" fill={corpo} />
+        <>
+          <ellipse
+            cx="0.3"
+            cy="0.3"
+            rx="1.0"
+            ry="0.42"
+            fill="rgba(0,0,0,0.35)"
+          />
+          <ellipse rx="1.0" ry="0.42" fill={camisa} />
+          <circle cx="-1.05" r="0.46" fill={cabelo} />
+        </>
       ) : (
         <>
-          <ellipse cx={e.x} cy={e.y + 0.5} rx="0.7" ry="1.3" fill={corpo} />
-          <circle
-            cx={e.x}
-            cy={e.y - 1.2}
-            r="0.55"
-            fill={t ? "#fef3c7" : "#fecaca"}
+          <ellipse
+            cx="0.35"
+            cy="0.35"
+            rx="0.55"
+            ry="1.05"
+            fill="rgba(0,0,0,0.35)"
           />
+          {andando && (
+            <>
+              <ellipse
+                cy="-0.3"
+                rx="0.35"
+                ry="0.2"
+                fill="#111827"
+                style={ani(true)}
+              />
+              <ellipse
+                cy="0.3"
+                rx="0.35"
+                ry="0.2"
+                fill="#111827"
+                style={ani(false)}
+              />
+              <ellipse
+                cy="-0.95"
+                rx="0.42"
+                ry="0.18"
+                fill={pele}
+                style={ani(false)}
+              />
+              <ellipse
+                cy="0.95"
+                rx="0.42"
+                ry="0.18"
+                fill={pele}
+                style={ani(true)}
+              />
+            </>
+          )}
+          <ellipse rx="0.42" ry="0.95" fill={camisa} />
+          <circle cx="0.12" r="0.46" fill={cabelo} />
+          {e.tipo === "armado" && (
+            <g fill="#0b0f19">
+              <rect x="0.3" y="0.55" width="1.2" height="0.28" />
+              <rect x="0.3" y="0.3" width="0.3" height="0.4" />
+            </g>
+          )}
         </>
-      )}
-      {e.tipo === "armado" && (
-        <rect
-          x={e.x + 0.5}
-          y={e.y - 0.1}
-          width="1.4"
-          height="0.35"
-          fill="#111827"
-        />
       )}
     </g>
   );
@@ -1008,6 +1460,7 @@ function Cena({
           <stop offset="0%" stopColor="#fef3c7" />
           <stop offset="100%" stopColor="#f59e0b" stopOpacity="0" />
         </radialGradient>
+        <style>{`@keyframes swing{from{transform:translateX(-0.5px)}to{transform:translateX(0.5px)}}`}</style>
       </defs>
 
       {/* o mundo inteiro desliza conforme o drone se move */}
@@ -1071,11 +1524,92 @@ function Cena({
 
         {/* entidades em movimento */}
         {entidades.map((e) => (
-          <EntidadeSvg key={e.id} e={e} t={t} />
+          <EntidadeSvg key={e.id} e={e} t={t} pausado={congelado} />
         ))}
       </g>
     </svg>
   );
+}
+
+function Glifo({ classe }: { classe: Classe }) {
+  const f = "#fff";
+  const k = "#0f172a";
+  switch (classe) {
+    case "veiculo":
+      return (
+        <g>
+          <rect x="-5" y="-3" width="10" height="6" rx="1.8" fill={f} />
+          <rect
+            x="-2.6"
+            y="-2"
+            width="5"
+            height="4"
+            rx="0.8"
+            fill={k}
+            opacity="0.55"
+          />
+        </g>
+      );
+    case "calor":
+      return (
+        <path
+          d="M0 -6 C3 -2 5 0 5 3 A5 5 0 0 1 -5 3 C-5 0 -2 -1 0 -6Z"
+          fill={f}
+        />
+      );
+    case "fumaca":
+      return (
+        <g fill={f}>
+          <circle cx="-2.5" cy="1" r="3" />
+          <circle cx="2" cy="0" r="3.4" />
+          <circle cx="0" cy="-2.2" r="2.6" />
+        </g>
+      );
+    case "obstaculo":
+      return (
+        <g>
+          <path d="M0 -6 L6 5 H-6Z" fill={f} />
+          <rect x="-0.6" y="-2" width="1.2" height="4" fill={k} />
+          <circle cx="0" cy="3.2" r="0.7" fill={k} />
+        </g>
+      );
+    case "ferido":
+      return (
+        <g fill={f}>
+          <circle cx="-4" cy="0" r="2.1" />
+          <rect x="-2" y="-1.8" width="9" height="3.6" rx="1.8" />
+        </g>
+      );
+    default:
+      return (
+        <g fill={f}>
+          <circle cx="0" cy="-3.6" r="2.2" />
+          <path d="M-4.5 5.5 Q-4.5 -0.5 0 -0.5 Q4.5 -0.5 4.5 5.5Z" />
+          {classe === "armado" && (
+            <rect
+              x="3"
+              y="0.5"
+              width="5.5"
+              height="1.8"
+              fill={k}
+              stroke={f}
+              strokeWidth="0.5"
+            />
+          )}
+          {classe === "mandado" && (
+            <rect
+              x="3.4"
+              y="-6"
+              width="4"
+              height="4.6"
+              fill={k}
+              stroke={f}
+              strokeWidth="0.6"
+            />
+          )}
+        </g>
+      );
+  }
 }
 
 /* ───────────── Mapa tático (simulado) ───────────── */
@@ -1119,6 +1653,7 @@ function MapaTatico({
     seguir: true,
   });
   const [revelar, setRevelar] = useState(false);
+  const [estilo, setEstilo] = useState<"ruas" | "satelite">("ruas");
 
   // guarda a posição mais recente do drone para o loop de teclado
   const droneRef = useRef(drone);
@@ -1217,6 +1752,21 @@ function MapaTatico({
           </span>
         </h3>
         <div className="flex flex-wrap items-center gap-3">
+          <div className="flex overflow-hidden rounded-md border border-slate-700 text-[11px]">
+            {(["ruas", "satelite"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setEstilo(s)}
+                className={`px-2 py-1 capitalize transition ${
+                  estilo === s
+                    ? "bg-sky-500 text-slate-950"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {s === "ruas" ? "Ruas" : "Satélite"}
+              </button>
+            ))}
+          </div>
           <button
             onClick={() => setRevelar((r) => !r)}
             title="Mostra no mapa as entidades que o drone ainda não detectou (modo demonstração)"
@@ -1252,7 +1802,11 @@ function MapaTatico({
           preserveAspectRatio="xMidYMid slice"
           className="absolute inset-0 h-full w-full"
         >
-          <Mundo p={PALETA_MAPA} grade />
+          <Mundo
+            p={estilo === "ruas" ? PALETA_MAPA : PALETA_RGB}
+            grade={estilo === "ruas"}
+            rotulos
+          />
 
           {/* área vista pela câmera */}
           <g style={{ transform: `translate(${drone.x}px, ${drone.y}px)` }}>
@@ -1305,10 +1859,10 @@ function MapaTatico({
               >
                 <g transform={`scale(${esc})`}>
                   {c.especial && (
-                    <circle r="10" fill="none" stroke={c.cor} strokeWidth="2">
+                    <circle r="12" fill="none" stroke={c.cor} strokeWidth="2">
                       <animate
                         attributeName="r"
-                        values="8;26"
+                        values="10;30"
                         dur="1.4s"
                         repeatCount="indefinite"
                       />
@@ -1321,19 +1875,22 @@ function MapaTatico({
                     </circle>
                   )}
                   <circle
-                    r={d.classe === "calor" ? 16 : 11}
+                    r={d.classe === "calor" ? 18 : 13}
                     fill={c.cor}
                     fillOpacity="0.18"
                   />
                   <circle
-                    r={c.especial ? 6.5 : 5}
+                    r={c.especial ? 10 : 8.5}
                     fill={c.cor}
                     stroke="#0f172a"
                     strokeWidth="1.5"
                   />
+                  <g transform={`scale(${c.especial ? 0.95 : 0.8})`}>
+                    <Glifo classe={d.classe} />
+                  </g>
                   {ativa && (
                     <circle
-                      r="11"
+                      r="14"
                       fill="none"
                       stroke="#fff"
                       strokeWidth="1.5"
@@ -1341,8 +1898,8 @@ function MapaTatico({
                   )}
                   {(ativa || c.especial) && (
                     <text
-                      x="14"
-                      y="-12"
+                      x="16"
+                      y="-14"
                       fontSize="11"
                       fontWeight="700"
                       fill="#fff"
