@@ -4,44 +4,57 @@ import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
 import {
+  ArrowLeft,
   Battery,
   Bot,
   Camera,
+  Car,
   Check,
   Clock,
   Construction,
+  Crosshair,
   Drone,
+  Eye,
+  EyeOff,
   Flame,
   Gamepad2,
   Gauge,
+  Gavel,
+  HeartPulse,
   Info,
   Loader2,
   LocateFixed,
   LogOut,
   MapPin,
   Mountain,
+  Plus,
   Radio,
   Repeat,
+  ShieldAlert,
+  Siren,
   Thermometer,
+  Trash2,
   Undo2,
   User,
+  Volume2,
+  VolumeX,
   Wifi,
   WifiOff,
   Wind,
   X,
   ZoomIn,
   ZoomOut,
-  ArrowLeft,
 } from "lucide-react";
 
 /* ───────────── Tipos ───────────── */
 
-type Classe = "pessoa" | "fumaca" | "calor" | "obstaculo";
+type TipoEntidade = "pessoa" | "veiculo" | "armado" | "mandado" | "ferido";
+type Classe = "fumaca" | "calor" | "obstaculo" | TipoEntidade;
 type Prioridade = "critica" | "media" | "baixa";
 type Status = "pendente" | "confirmado" | "descartado";
 type Conexao = "online" | "perdida" | "sincronizando";
 type Modo = "rgb" | "termico";
-type ModoVoo = "manual" | "patrulha" | "base";
+type ModoVoo = "manual" | "patrulha" | "base" | "seguir";
 
 interface Deteccao {
   id: number;
@@ -56,6 +69,21 @@ interface Deteccao {
   texto: string;
   status: Status;
   sincronizado?: boolean;
+  entidadeId?: number; // entidade em movimento acompanhada por esta detecção
+  setor?: string;
+  ref?: string; // referência simulada (alvo com mandado)
+}
+
+interface Entidade {
+  id: number;
+  tipo: TipoEntidade;
+  rua: number; // índice em RUAS
+  dir: 1 | -1;
+  v: number; // velocidade (m/s)
+  off: number; // deslocamento lateral na rua
+  x: number;
+  y: number;
+  detectada: boolean;
 }
 
 interface Voo {
@@ -65,31 +93,45 @@ interface Voo {
   vy: number;
   th: number; // ângulo da órbita (modo patrulha)
   modo: ModoVoo;
+  alvoId: number | null; // entidade seguida (modo seguir)
+}
+
+interface Alerta {
+  detId: number;
+  entidadeId: number;
+  classe: Classe;
+  setor: string;
 }
 
 /* ───────────── Configuração ───────────── */
 
 const MODELO_IA = "diapb-vision v0.3 (simulado)";
+const MAX_ENT = 14;
+const LARGURA = { maxWidth: "calc(62vh * 16 / 9)" };
 
 const CLASSES: Record<
   Classe,
   {
     label: string;
+    curto: string;
     Icon: LucideIcon;
     cor: string;
     fonte: string;
+    especial?: boolean;
     ancora: { x: number; y: number; w: number; h: number };
   }
 > = {
   pessoa: {
     label: "Pessoa",
+    curto: "Pessoa",
     Icon: User,
     cor: "#38bdf8",
     fonte: "Câmera RGB",
-    ancora: { x: 55, y: 62, w: 7, h: 15 },
+    ancora: { x: 55, y: 62, w: 6, h: 13 },
   },
   calor: {
     label: "Foco de calor",
+    curto: "Calor",
     Icon: Flame,
     cor: "#fb923c",
     fonte: "Sensor térmico",
@@ -97,6 +139,7 @@ const CLASSES: Record<
   },
   fumaca: {
     label: "Fumaça",
+    curto: "Fumaça",
     Icon: Wind,
     cor: "#cbd5e1",
     fonte: "Câmera RGB",
@@ -104,10 +147,46 @@ const CLASSES: Record<
   },
   obstaculo: {
     label: "Obstáculo",
+    curto: "Obstáculo",
     Icon: Construction,
     cor: "#facc15",
     fonte: "Câmera RGB",
     ancora: { x: 25, y: 48, w: 9, h: 16 },
+  },
+  veiculo: {
+    label: "Veículo",
+    curto: "Veículo",
+    Icon: Car,
+    cor: "#a3e635",
+    fonte: "Câmera RGB",
+    ancora: { x: 50, y: 50, w: 10, h: 11 },
+  },
+  armado: {
+    label: "Possível pessoa armada",
+    curto: "ARMADA",
+    Icon: ShieldAlert,
+    cor: "#ef4444",
+    fonte: "Câmera RGB · classificador de objetos",
+    especial: true,
+    ancora: { x: 50, y: 50, w: 6, h: 13 },
+  },
+  mandado: {
+    label: "Possível mandado em aberto",
+    curto: "MANDADO",
+    Icon: Gavel,
+    cor: "#d946ef",
+    fonte: "Consulta simulada à central",
+    especial: true,
+    ancora: { x: 50, y: 50, w: 6, h: 13 },
+  },
+  ferido: {
+    label: "Possível pessoa ferida",
+    curto: "FERIDO",
+    Icon: HeartPulse,
+    cor: "#22d3ee",
+    fonte: "Câmera RGB + sensor térmico",
+    especial: true,
+    ancora: { x: 50, y: 50, w: 7, h: 11 },
   },
 };
 
@@ -124,6 +203,14 @@ const PRIORIDADES: Record<Prioridade, { label: string; classe: string }> = {
     label: "Baixa",
     classe: "bg-sky-500/15 text-sky-300 border-sky-500/30",
   },
+};
+
+const PRIORIDADE_ENT: Record<TipoEntidade, Prioridade> = {
+  armado: "critica",
+  ferido: "critica",
+  mandado: "media",
+  pessoa: "media",
+  veiculo: "baixa",
 };
 
 const TEXTOS: Record<Classe, ((q: string) => string)[]> = {
@@ -155,12 +242,32 @@ const TEXTOS: Record<Classe, ((q: string) => string)[]> = {
     (q) =>
       `Estrutura vertical detectada no setor ${q}. Mantenha distância segura.`,
   ],
+  veiculo: [
+    (q) =>
+      `Veículo em movimento no setor ${q}. Placa não legível nesta altitude.`,
+    (q) => `Veículo detectado no setor ${q}, circulando pela via.`,
+  ],
+  armado: [
+    (q) =>
+      `Possível pessoa armada no setor ${q}. Objeto compatível com arma de fogo na mão. Mantenha distância e confirme visualmente antes de acionar a equipe.`,
+    (q) =>
+      `Indivíduo com objeto alongado semelhante a arma no setor ${q}. Pode ser falso positivo (ferramenta, guarda-chuva). Exige confirmação humana.`,
+  ],
+  mandado: [
+    (q) =>
+      `Possível correspondência com mandado em aberto no setor ${q}. O vínculo vem de uma consulta simulada à central; a imagem não identifica ninguém. Exige validação humana e confirmação formal antes de qualquer abordagem.`,
+  ],
+  ferido: [
+    (q) =>
+      `Pessoa imóvel no solo no setor ${q}, possivelmente ferida. Priorize a verificação visual e acione apoio de resgate se confirmado.`,
+  ],
 };
 
 const ROTULO_MODO: Record<ModoVoo, string> = {
   manual: "MANUAL",
   patrulha: "PATRULHA AUTOMÁTICA",
   base: "RETORNANDO À BASE",
+  seguir: "SEGUINDO ALVO",
 };
 
 /* ───────────── Utilidades ───────────── */
@@ -184,6 +291,7 @@ function quadrante(x: number, y: number) {
   return v || h;
 }
 
+// Detecção de objetos fixos da cena (fumaça, calor, antena, pessoa inicial)
 function criarDeteccao(
   id: number,
   classe: Classe,
@@ -233,6 +341,36 @@ function classeAleatoria(): Classe {
   return "obstaculo";
 }
 
+/* ───────────── Alerta sonoro ───────────── */
+
+let audioCtx: AudioContext | null = null;
+
+function bipe(urgente: boolean) {
+  try {
+    const Ctx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext;
+    audioCtx = audioCtx ?? new Ctx();
+    const ctx = audioCtx;
+    if (ctx.state === "suspended") ctx.resume();
+    const t0 = ctx.currentTime;
+    [0, 0.22, 0.44].forEach((off) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "square";
+      o.frequency.value = urgente ? 880 : 620;
+      g.gain.setValueAtTime(0.0001, t0 + off);
+      g.gain.exponentialRampToValueAtTime(0.1, t0 + off + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + off + 0.18);
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start(t0 + off);
+      o.stop(t0 + off + 0.2);
+    });
+  } catch {}
+}
+
 /* ───────────── Mundo simulado (usado pelo mapa E pelo vídeo) ───────────── */
 
 const MAP_W = 800;
@@ -255,7 +393,7 @@ function latLng(x: number, y: number) {
   };
 }
 
-// posição fixa de uma detecção no mundo
+// posição fixa de uma detecção "estática" no mundo
 function mundoDe(d: Deteccao) {
   return {
     x: HOME.x - FOOT.w / 2 + (d.x / 100) * FOOT.w,
@@ -263,9 +401,11 @@ function mundoDe(d: Deteccao) {
   };
 }
 
-// onde essa detecção aparece no vídeo (em %), dado onde o drone está
-function posNoVideo(d: Deteccao, drone: { x: number; y: number }) {
-  const m = mundoDe(d);
+// onde um ponto do mundo aparece no vídeo (em %), dado onde o drone está
+function posNoVideo(
+  m: { x: number; y: number },
+  drone: { x: number; y: number },
+) {
   return {
     x: ((m.x - (drone.x - FOOT.w / 2)) / FOOT.w) * 100,
     y: ((m.y - (drone.y - FOOT.h / 2)) / FOOT.h) * 100,
@@ -329,6 +469,8 @@ const RUAS = [
   { x1: 252, y1: 232, x2: 548, y2: 232, w: 7 },
   { x1: 335, y1: 142, x2: 335, y2: 248, w: 6 },
   { x1: 475, y1: 142, x2: 475, y2: 248, w: 6 },
+  // passagem de pedestres atravessando a praça central
+  { x1: 396, y1: 142, x2: 396, y2: 248, w: 4 },
 ];
 
 // Quadras gerais (todas as células, exceto a central, que é detalhada à mão)
@@ -398,13 +540,12 @@ const PREDIOS_LOCAIS: [number, number, number, number][] = [
 ];
 const ARVORES: [number, number][] = [
   [345, 154],
-  [392, 162],
+  [388, 162],
   [388, 226],
   [428, 214],
   [432, 163],
   [454, 196],
   [360, 190],
-  [395, 176],
   [455, 185],
   [480, 240],
   [326, 240],
@@ -525,9 +666,181 @@ const Mundo = memo(function Mundo({
   );
 });
 
+/* ───────────── Entidades (pessoas, veículos e alvos especiais) ───────────── */
+
+const ehHoriz = (r: (typeof RUAS)[number]) => r.y1 === r.y2;
+
+function posRua(r: (typeof RUAS)[number], along: number, off: number) {
+  return ehHoriz(r) ? { x: along, y: r.y1 + off } : { x: r.x1 + off, y: along };
+}
+
+// escolhe um ponto aleatório numa rua a até `raio` metros de `ref`
+function pontoNaRua(
+  ref: { x: number; y: number },
+  raio: number,
+  larguraMin = 0,
+) {
+  const candidatas: { i: number; min: number; max: number }[] = [];
+  RUAS.forEach((r, i) => {
+    if (r.w < larguraMin) return;
+    const horiz = ehHoriz(r);
+    const eixoRef = horiz ? ref.x : ref.y;
+    const cruz = horiz ? Math.abs(ref.y - r.y1) : Math.abs(ref.x - r.x1);
+    if (cruz > raio) return;
+    const meio = Math.sqrt(raio * raio - cruz * cruz);
+    const ini = horiz ? r.x1 : r.y1;
+    const fim = horiz ? r.x2 : r.y2;
+    const min = Math.max(ini + 4, eixoRef - meio);
+    const max = Math.min(fim - 4, eixoRef + meio);
+    if (max > min) candidatas.push({ i, min, max });
+  });
+  if (!candidatas.length) return null;
+  const c = candidatas[Math.floor(Math.random() * candidatas.length)];
+  return { rua: c.i, along: c.min + Math.random() * (c.max - c.min) };
+}
+
+function criarEntidade(
+  id: number,
+  tipo: TipoEntidade,
+  ref: { x: number; y: number },
+  visivel: boolean, // true: já dentro da área da câmera; false: fora dela
+): Entidade {
+  const larguraMin = tipo === "veiculo" ? 6 : 0;
+  let ponto: { rua: number; along: number } | null = null;
+
+  for (let i = 0; i < 14 && !ponto; i++) {
+    const p = pontoNaRua(ref, visivel ? 40 : 110, larguraMin);
+    if (!p) continue;
+    const q = posRua(RUAS[p.rua], p.along, 0);
+    const dentro =
+      Math.abs(q.x - ref.x) < FOOT.w / 2 - 6 &&
+      Math.abs(q.y - ref.y) < FOOT.h / 2 - 5;
+    const fora =
+      Math.abs(q.x - ref.x) > FOOT.w / 2 + 6 ||
+      Math.abs(q.y - ref.y) > FOOT.h / 2 + 6;
+    if (visivel ? dentro : fora) ponto = p;
+  }
+  if (!ponto) {
+    ponto = pontoNaRua(ref, 120, larguraMin) ??
+      pontoNaRua(ref, 1000, larguraMin) ?? { rua: 0, along: 100 };
+  }
+
+  const r = RUAS[ponto.rua];
+  const lado = Math.random() < 0.5 ? -1 : 1;
+  const off =
+    tipo === "veiculo" ? lado * r.w * 0.2 : lado * Math.max(0.5, r.w / 2 - 1.2);
+  const v =
+    tipo === "ferido"
+      ? 0
+      : tipo === "veiculo"
+        ? 6 + Math.random() * 3
+        : tipo === "armado"
+          ? 1.7 + Math.random() * 0.6
+          : 1.2 + Math.random() * 0.6;
+  const pos = posRua(r, ponto.along, off);
+
+  return {
+    id,
+    tipo,
+    rua: ponto.rua,
+    dir: Math.random() < 0.5 ? 1 : -1,
+    v,
+    off,
+    x: pos.x,
+    y: pos.y,
+    detectada: false,
+  };
+}
+
+function moverEntidade(e: Entidade, dt: number): Entidade {
+  if (e.v === 0) return e;
+  const r = RUAS[e.rua];
+  const horiz = ehHoriz(r);
+  const ini = (horiz ? r.x1 : r.y1) + 2;
+  const fim = (horiz ? r.x2 : r.y2) - 2;
+  let along = (horiz ? e.x : e.y) + e.dir * e.v * dt;
+  let dir = e.dir;
+  if (along < ini) {
+    along = ini;
+    dir = 1;
+  } else if (along > fim) {
+    along = fim;
+    dir = -1;
+  } else if (e.tipo !== "veiculo" && Math.random() < dt * 0.04) {
+    dir = dir === 1 ? -1 : 1; // pedestre muda de sentido de vez em quando
+  }
+  return horiz ? { ...e, x: along, dir } : { ...e, y: along, dir };
+}
+
+function tipoAleatorio(): TipoEntidade {
+  const r = Math.random();
+  if (r < 0.4) return "pessoa";
+  if (r < 0.65) return "veiculo";
+  if (r < 0.77) return "armado";
+  if (r < 0.89) return "mandado";
+  return "ferido";
+}
+
+function dentroDaCamera(
+  e: { x: number; y: number },
+  v: { x: number; y: number },
+  f = 0.92,
+) {
+  return (
+    Math.abs(e.x - v.x) < (FOOT.w / 2) * f &&
+    Math.abs(e.y - v.y) < (FOOT.h / 2) * f
+  );
+}
+
+// comentário da IA gerado quando uma entidade entra na área da câmera
+function criarDeteccaoEntidade(
+  id: number,
+  e: Entidade,
+  drone: { x: number; y: number },
+): Deteccao {
+  const c = CLASSES[e.tipo];
+  const vp = posNoVideo(e, drone);
+  const setor = quadrante(vp.x, vp.y);
+  const textos = TEXTOS[e.tipo];
+  return {
+    id,
+    classe: e.tipo,
+    x: ((e.x - (HOME.x - FOOT.w / 2)) / FOOT.w) * 100,
+    y: ((e.y - (HOME.y - FOOT.h / 2)) / FOOT.h) * 100,
+    w: c.ancora.w,
+    h: c.ancora.h,
+    confianca: Math.round(
+      (e.tipo === "mandado" ? 60 : 64) +
+        Math.random() * (e.tipo === "mandado" ? 25 : 30),
+    ),
+    prioridade: PRIORIDADE_ENT[e.tipo],
+    hora: new Date(),
+    texto: textos[Math.floor(Math.random() * textos.length)](setor),
+    status: "pendente",
+    entidadeId: e.id,
+    setor,
+    ref:
+      e.tipo === "mandado"
+        ? `SIM-${1000 + Math.floor(Math.random() * 9000)}`
+        : undefined,
+  };
+}
+
+// posição atual de uma detecção: da entidade (se existir) ou fixa
+function posDet(d: Deteccao, ents: Map<number, Entidade>) {
+  const e = d.entidadeId != null ? ents.get(d.entidadeId) : undefined;
+  return e ? { x: e.x, y: e.y } : mundoDe(d);
+}
+
 /* ───────────── Física simples do voo ───────────── */
 
-function passoVoo(v: Voo, dx: number, dy: number, dt: number): Voo {
+function passoVoo(
+  v: Voo,
+  dx: number,
+  dy: number,
+  dt: number,
+  alvoPos: { x: number; y: number } | null,
+): Voo {
   // parado e sem comando: nada a atualizar
   if (v.modo === "manual" && !dx && !dy && Math.hypot(v.vx, v.vy) < 0.01) {
     return v.vx || v.vy ? { ...v, vx: 0, vy: 0 } : v;
@@ -545,26 +858,33 @@ function passoVoo(v: Voo, dx: number, dy: number, dt: number): Voo {
       alvoVy = (dy / len) * V_MAX;
     }
   } else {
-    let tx: number;
-    let ty: number;
+    let alvo: { x: number; y: number } | null = null;
     if (modo === "patrulha") {
       th += dt * 0.08;
-      tx = HOME.x + ORB.rx * Math.cos(th);
-      ty = HOME.y + ORB.ry * Math.sin(th);
-    } else {
-      tx = HOME.x;
-      ty = HOME.y;
+      alvo = {
+        x: HOME.x + ORB.rx * Math.cos(th),
+        y: HOME.y + ORB.ry * Math.sin(th),
+      };
+    } else if (modo === "base") {
+      alvo = HOME;
+    } else if (modo === "seguir") {
+      alvo = alvoPos; // some quando a entidade deixa de existir
     }
-    const ex = tx - v.x;
-    const ey = ty - v.y;
-    const dist = Math.hypot(ex, ey);
 
-    if (modo === "base" && dist < 1 && Math.hypot(v.vx, v.vy) < 1) {
-      modo = "manual"; // chegou: devolve o controle ao operador
-    } else if (dist > 0) {
-      const vel = Math.min(V_MAX, dist * 1.5);
-      alvoVx = (ex / dist) * vel;
-      alvoVy = (ey / dist) * vel;
+    if (!alvo) {
+      modo = "manual";
+    } else {
+      const ex = alvo.x - v.x;
+      const ey = alvo.y - v.y;
+      const dist = Math.hypot(ex, ey);
+
+      if (modo === "base" && dist < 1 && Math.hypot(v.vx, v.vy) < 1) {
+        modo = "manual"; // chegou: devolve o controle ao operador
+      } else if (dist > 0) {
+        const vel = Math.min(V_MAX, dist * 1.5);
+        alvoVx = (ex / dist) * vel;
+        alvoVy = (ey / dist) * vel;
+      }
     }
   }
 
@@ -580,19 +900,83 @@ function passoVoo(v: Voo, dx: number, dy: number, dt: number): Voo {
     vy,
     th,
     modo,
+    alvoId: v.alvoId,
   };
 }
 
 /* ───────────── Vídeo: visão aérea recortada na posição do drone ───────────── */
 
+const COR_VEICULO = ["#e5e7eb", "#b91c1c", "#1d4ed8", "#facc15", "#1f2937"];
+const COR_PESSOA = ["#fca5a5", "#93c5fd", "#fde68a", "#a7f3d0"];
+
+function EntidadeSvg({ e, t }: { e: Entidade; t: boolean }) {
+  if (e.tipo === "veiculo") {
+    const horiz = ehHoriz(RUAS[e.rua]);
+    const w = horiz ? 4.4 : 2.2;
+    const h = horiz ? 2.2 : 4.4;
+    return (
+      <g>
+        <rect
+          x={e.x - w / 2}
+          y={e.y - h / 2}
+          width={w}
+          height={h}
+          rx="0.5"
+          fill={t ? "#3b2f7a" : COR_VEICULO[e.id % COR_VEICULO.length]}
+        />
+        {t && (
+          <circle
+            cx={e.x + (horiz ? e.dir * 1.3 : 0)}
+            cy={e.y + (horiz ? 0 : e.dir * 1.3)}
+            r="1.5"
+            fill="url(#body)"
+          />
+        )}
+      </g>
+    );
+  }
+
+  const deitado = e.tipo === "ferido";
+  const corpo = t ? "#fde68a" : COR_PESSOA[e.id % COR_PESSOA.length];
+  return (
+    <g>
+      {t && <circle cx={e.x} cy={e.y} r="2.6" fill="url(#body)" />}
+      {deitado ? (
+        <ellipse cx={e.x} cy={e.y} rx="1.4" ry="0.55" fill={corpo} />
+      ) : (
+        <>
+          <ellipse cx={e.x} cy={e.y + 0.5} rx="0.7" ry="1.3" fill={corpo} />
+          <circle
+            cx={e.x}
+            cy={e.y - 1.2}
+            r="0.55"
+            fill={t ? "#fef3c7" : "#fecaca"}
+          />
+        </>
+      )}
+      {e.tipo === "armado" && (
+        <rect
+          x={e.x + 0.5}
+          y={e.y - 0.1}
+          width="1.4"
+          height="0.35"
+          fill="#111827"
+        />
+      )}
+    </g>
+  );
+}
+
 function Cena({
   modo,
   congelado,
   drone,
+  entidades,
 }: {
   modo: Modo;
   congelado: boolean;
   drone: { x: number; y: number };
+  entidades: Entidade[];
 }) {
   const t = modo === "termico";
   const p = t ? PALETA_TERMICA : PALETA_RGB;
@@ -669,7 +1053,7 @@ function Cena({
           opacity={t ? 0.1 : 0.85}
         />
 
-        {/* pessoa */}
+        {/* pessoa fixa da cena */}
         <circle cx={pessoa.x} cy={pessoa.y} r={t ? 2.5 : 0} fill="url(#body)" />
         <ellipse
           cx={pessoa.x}
@@ -684,6 +1068,11 @@ function Cena({
           r="0.55"
           fill={t ? "#fef3c7" : "#fecaca"}
         />
+
+        {/* entidades em movimento */}
+        {entidades.map((e) => (
+          <EntidadeSvg key={e.id} e={e} t={t} />
+        ))}
       </g>
     </svg>
   );
@@ -702,16 +1091,26 @@ function ajustarCam(cx: number, cy: number, z: number) {
   };
 }
 
+interface Marcador {
+  d: Deteccao;
+  pos: { x: number; y: number };
+  movel: boolean;
+}
+
 function MapaTatico({
   drone,
+  rotulo,
   online,
-  deteccoes,
+  marcadores,
+  ocultas,
   selecionada,
   onSelecionar,
 }: {
   drone: { x: number; y: number };
+  rotulo: string;
   online: boolean;
-  deteccoes: Deteccao[];
+  marcadores: Marcador[];
+  ocultas: Entidade[];
   selecionada: number | null;
   onSelecionar: (id: number) => void;
 }) {
@@ -719,6 +1118,7 @@ function MapaTatico({
     ...ajustarCam(HOME.x, HOME.y, 2.5),
     seguir: true,
   });
+  const [revelar, setRevelar] = useState(false);
 
   // guarda a posição mais recente do drone para o loop de teclado
   const droneRef = useRef(drone);
@@ -816,16 +1216,34 @@ function MapaTatico({
             esquemático · simulado
           </span>
         </h3>
-        <p className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
-          <span className="flex gap-1">
-            <kbd className={kbd}>←</kbd>
-            <kbd className={kbd}>↑</kbd>
-            <kbd className={kbd}>↓</kbd>
-            <kbd className={kbd}>→</kbd>
-          </span>
-          mover mapa ·<kbd className={kbd}>J</kbd> aproximar ·
-          <kbd className={kbd}>K</kbd> afastar
-        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => setRevelar((r) => !r)}
+            title="Mostra no mapa as entidades que o drone ainda não detectou (modo demonstração)"
+            className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition ${
+              revelar
+                ? "border-violet-400/50 bg-violet-500/15 text-violet-200"
+                : "border-slate-700 text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {revelar ? (
+              <Eye className="h-3.5 w-3.5" />
+            ) : (
+              <EyeOff className="h-3.5 w-3.5" />
+            )}
+            Entidades ocultas
+          </button>
+          <p className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+            <span className="flex gap-1">
+              <kbd className={kbd}>←</kbd>
+              <kbd className={kbd}>↑</kbd>
+              <kbd className={kbd}>↓</kbd>
+              <kbd className={kbd}>→</kbd>
+            </span>
+            mover ·<kbd className={kbd}>J</kbd> aproximar ·
+            <kbd className={kbd}>K</kbd> afastar
+          </p>
+        </div>
       </div>
 
       <div className="relative h-72 bg-[#0f1f18] lg:h-80">
@@ -852,54 +1270,88 @@ function MapaTatico({
             />
           </g>
 
+          {/* entidades ainda não detectadas (modo demonstração) */}
+          {revelar &&
+            ocultas.map((e) => (
+              <g
+                key={`o${e.id}`}
+                style={{ transform: `translate(${e.x}px, ${e.y}px)` }}
+              >
+                <g transform={`scale(${esc})`}>
+                  <circle
+                    r="5"
+                    fill="none"
+                    stroke={CLASSES[e.tipo].cor}
+                    strokeWidth="1.5"
+                    strokeDasharray="3 2"
+                  />
+                </g>
+              </g>
+            ))}
+
           {/* detecções */}
-          {deteccoes.map((d) => {
+          {marcadores.map(({ d, pos, movel }) => {
             const c = CLASSES[d.classe];
-            const m = mundoDe(d);
             const ativa = selecionada === d.id;
             return (
               <g
                 key={d.id}
                 onClick={() => onSelecionar(d.id)}
                 style={{
-                  transform: `translate(${m.x}px, ${m.y}px)`,
-                  transition: "transform 1s linear",
+                  transform: `translate(${pos.x}px, ${pos.y}px)`,
+                  transition: movel ? undefined : "transform 1s linear",
                   cursor: "pointer",
                 }}
               >
                 <g transform={`scale(${esc})`}>
+                  {c.especial && (
+                    <circle r="10" fill="none" stroke={c.cor} strokeWidth="2">
+                      <animate
+                        attributeName="r"
+                        values="8;26"
+                        dur="1.4s"
+                        repeatCount="indefinite"
+                      />
+                      <animate
+                        attributeName="opacity"
+                        values="0.9;0"
+                        dur="1.4s"
+                        repeatCount="indefinite"
+                      />
+                    </circle>
+                  )}
                   <circle
                     r={d.classe === "calor" ? 16 : 11}
                     fill={c.cor}
                     fillOpacity="0.18"
                   />
                   <circle
-                    r="5"
+                    r={c.especial ? 6.5 : 5}
                     fill={c.cor}
                     stroke="#0f172a"
                     strokeWidth="1.5"
                   />
                   {ativa && (
-                    <>
-                      <circle
-                        r="10"
-                        fill="none"
-                        stroke="#fff"
-                        strokeWidth="1.5"
-                      />
-                      <text
-                        x="14"
-                        y="-12"
-                        fontSize="11"
-                        fontWeight="600"
-                        fill="#fff"
-                        stroke="#0f172a"
-                        strokeWidth="3"
-                        paintOrder="stroke"
-                      >
-                        {c.label} {d.confianca}%
-                      </text>
-                    </>
+                    <circle
+                      r="11"
+                      fill="none"
+                      stroke="#fff"
+                      strokeWidth="1.5"
+                    />
+                  )}
+                  {(ativa || c.especial) && (
+                    <text
+                      x="14"
+                      y="-12"
+                      fontSize="11"
+                      fontWeight="700"
+                      fill="#fff"
+                      stroke="#0f172a"
+                      strokeWidth="3"
+                      paintOrder="stroke"
+                    >
+                      {ativa ? `${c.curto} ${d.confianca}%` : c.curto}
+                    </text>
                   )}
                 </g>
               </g>
@@ -958,7 +1410,8 @@ function MapaTatico({
                 strokeWidth="3"
                 paintOrder="stroke"
               >
-                DR-01{online ? "" : " · última posição"}
+                {rotulo}
+                {online ? "" : " · última posição"}
               </text>
             </g>
           </g>
@@ -1019,7 +1472,7 @@ function MapaTatico({
               className="h-2.5 w-2.5 rounded-full"
               style={{ background: CLASSES[k].cor }}
             />
-            {CLASSES[k].label}
+            {CLASSES[k].curto}
           </span>
         ))}
         <span className="flex items-center gap-1.5">
@@ -1034,6 +1487,7 @@ function MapaTatico({
 /* ───────────── Sessão (localStorage) ───────────── */
 
 const SESSAO_KEY = "diapb_sessao";
+const DRONE_KEY = "diapb_drone";
 
 function assinar(cb: () => void) {
   window.addEventListener("storage", cb);
@@ -1048,8 +1502,6 @@ function lerSessao() {
   }
 }
 
-const DRONE_KEY = "diapb_drone";
-
 function lerDrone() {
   try {
     return localStorage.getItem(DRONE_KEY);
@@ -1058,7 +1510,7 @@ function lerDrone() {
   }
 }
 
-/* ───────────── Página: verifica o login e renderiza o painel ───────────── */
+/* ───────────── Página: verifica login e drone escolhido ───────────── */
 
 export default function DronePage() {
   const router = useRouter();
@@ -1090,6 +1542,14 @@ export default function DronePage() {
 
 /* ───────────── Painel do drone ───────────── */
 
+const GERAR: { tipo: TipoEntidade; rotulo: string }[] = [
+  { tipo: "armado", rotulo: "Pessoa armada" },
+  { tipo: "mandado", rotulo: "Mandado em aberto" },
+  { tipo: "ferido", rotulo: "Pessoa ferida" },
+  { tipo: "veiculo", rotulo: "Veículo" },
+  { tipo: "pessoa", rotulo: "Pessoa" },
+];
+
 function Painel({
   cpf,
   droneId,
@@ -1116,6 +1576,7 @@ function Painel({
     vy: 0,
     th: 0,
     modo: "manual",
+    alvoId: null,
   });
   const [pressionadas, setPressionadas] = useState<string[]>([]);
 
@@ -1143,18 +1604,42 @@ function Painel({
       }),
     ];
   });
+
+  // entidades em movimento (a "verdade" do cenário simulado)
+  const [entidades, setEntidades] = useState<Entidade[]>(() => [
+    criarEntidade(1, "pessoa", HOME, true),
+    criarEntidade(2, "veiculo", HOME, false),
+    criarEntidade(3, "pessoa", HOME, true),
+  ]);
+  const [autoSpawn, setAutoSpawn] = useState(true);
+  const [som, setSom] = useState(true);
+  const [alerta, setAlerta] = useState<Alerta | null>(null);
+
   const [selecionada, setSelecionada] = useState<number | null>(null);
   const [filtro, setFiltro] = useState<"todos" | "pendentes">("todos");
 
   const proxId = useRef(100);
+  const proxEnt = useRef(10);
   const contador = useRef(0);
   const teclas = useRef(new Set<string>());
   const syncTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const alertaTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* Limpa o timeout de sincronização ao sair da página */
+  // espelhos do estado mais recente, lidos por timers e loops
+  const vooRef = useRef(voo);
+  const entRef = useRef(entidades);
+  const somRef = useRef(som);
+  useEffect(() => {
+    vooRef.current = voo;
+    entRef.current = entidades;
+    somRef.current = som;
+  });
+
+  /* Limpa timeouts ao sair da página */
   useEffect(() => {
     return () => {
       if (syncTimeout.current) clearTimeout(syncTimeout.current);
+      if (alertaTimeout.current) clearTimeout(alertaTimeout.current);
     };
   }, []);
 
@@ -1190,7 +1675,7 @@ function Painel({
     };
   }, []);
 
-  /* Loop de voo (~30 quadros/s). Sem conexão, o drone mantém a posição. */
+  /* Loop de voo e movimento das entidades (~30 quadros/s). Sem conexão, tudo congela. */
   useEffect(() => {
     if (conexao !== "online") return;
     let raf = 0;
@@ -1205,7 +1690,18 @@ function Painel({
         const t = teclas.current;
         const dx = (t.has("d") ? 1 : 0) - (t.has("a") ? 1 : 0);
         const dy = (t.has("s") ? 1 : 0) - (t.has("w") ? 1 : 0);
-        setVoo((v) => passoVoo(v, dx, dy, passo));
+
+        const alvoId = vooRef.current.alvoId;
+        const alvo =
+          alvoId != null
+            ? entRef.current.find((e) => e.id === alvoId)
+            : undefined;
+        const alvoPos = alvo ? { x: alvo.x, y: alvo.y } : null;
+
+        setVoo((v) => passoVoo(v, dx, dy, passo, alvoPos));
+        setEntidades((es) =>
+          es.some((e) => e.v > 0) ? es.map((e) => moverEntidade(e, passo)) : es,
+        );
       }
       raf = requestAnimationFrame(loop);
     };
@@ -1213,7 +1709,7 @@ function Painel({
     return () => cancelAnimationFrame(raf);
   }, [conexao]);
 
-  /* Relógio / telemetria / IA simuladas (1 Hz) */
+  /* Relógio / telemetria / spawn / descoberta pela IA (1 Hz) */
   useEffect(() => {
     const id = setInterval(() => {
       contador.current += 1;
@@ -1227,9 +1723,10 @@ function Painel({
           latencia: Math.round(110 + Math.random() * 80),
         }));
 
-        // as detecções oscilam levemente em torno do alvo
+        // objetos fixos da cena oscilam levemente em torno do alvo
         setDeteccoes((prev) =>
           prev.map((d) => {
+            if (d.entidadeId != null) return d;
             const a = CLASSES[d.classe].ancora;
             return {
               ...d,
@@ -1247,9 +1744,46 @@ function Painel({
           }),
         );
 
-        if (n % 7 === 0) {
-          const nova = criarDeteccao(proxId.current++, classeAleatoria());
-          setDeteccoes((prev) => [nova, ...prev].slice(0, 30));
+        const v = vooRef.current;
+
+        // spawn automático: novas entidades surgem fora da área da câmera
+        if (autoSpawn && n % 6 === 0 && entRef.current.length < MAX_ENT) {
+          const nova = criarEntidade(
+            proxEnt.current++,
+            tipoAleatorio(),
+            v,
+            false,
+          );
+          setEntidades((es) => [...es, nova]);
+        }
+
+        // a IA só comenta uma entidade quando ela entra na área da câmera
+        const novas = entRef.current.filter(
+          (e) => !e.detectada && dentroDaCamera(e, v),
+        );
+        if (novas.length) {
+          const dets = novas.map((e) =>
+            criarDeteccaoEntidade(proxId.current++, e, v),
+          );
+          const ids = new Set(novas.map((e) => e.id));
+          setDeteccoes((prev) => [...dets, ...prev].slice(0, 40));
+          setEntidades((es) =>
+            es.map((e) => (ids.has(e.id) ? { ...e, detectada: true } : e)),
+          );
+
+          // alerta visual e sonoro para alvos especiais
+          const esp = dets.find((d) => CLASSES[d.classe].especial);
+          if (esp && esp.entidadeId != null) {
+            setAlerta({
+              detId: esp.id,
+              entidadeId: esp.entidadeId,
+              classe: esp.classe,
+              setor: esp.setor ?? "central",
+            });
+            if (alertaTimeout.current) clearTimeout(alertaTimeout.current);
+            alertaTimeout.current = setTimeout(() => setAlerta(null), 10000);
+            if (somRef.current) bipe(esp.classe === "armado");
+          }
         }
       } else if (conexao === "perdida") {
         setSemDados((s) => s + 1);
@@ -1257,12 +1791,13 @@ function Painel({
       }
     }, 1000);
     return () => clearInterval(id);
-  }, [conexao]);
+  }, [conexao, autoSpawn]);
 
   /* Ações */
   function sair() {
     try {
       localStorage.removeItem(SESSAO_KEY);
+      localStorage.removeItem(DRONE_KEY);
     } catch {}
     router.push("/login");
   }
@@ -1289,7 +1824,7 @@ function Painel({
           sincronizado: true,
         }),
       );
-      setDeteccoes((prev) => [...recuperadas, ...prev].slice(0, 30));
+      setDeteccoes((prev) => [...recuperadas, ...prev].slice(0, 40));
       setPendentesBuffer(0);
       setSemDados(0);
       setConexao("online");
@@ -1305,6 +1840,10 @@ function Painel({
     }));
   }
 
+  function seguirAlvo(entId: number) {
+    setVoo((v) => ({ ...v, modo: "seguir", alvoId: entId }));
+  }
+
   function apertar(k: string) {
     teclas.current.add(k);
     setPressionadas(Array.from(teclas.current));
@@ -1314,6 +1853,23 @@ function Painel({
   function soltar(k: string) {
     teclas.current.delete(k);
     setPressionadas(Array.from(teclas.current));
+  }
+
+  // gera uma entidade já dentro da área da câmera (demonstração)
+  function gerar(tipo: TipoEntidade) {
+    const nova = criarEntidade(
+      proxEnt.current++,
+      tipo,
+      { x: voo.x, y: voo.y },
+      true,
+    );
+    setEntidades((es) =>
+      es.length >= MAX_ENT ? [...es.slice(1), nova] : [...es, nova],
+    );
+  }
+
+  function limparEntidades() {
+    setEntidades([]);
   }
 
   function definirStatus(id: number, status: Status) {
@@ -1333,15 +1889,26 @@ function Painel({
   const drone = { x: voo.x, y: voo.y };
   const { lat, lng } = latLng(voo.x, voo.y);
   const velocidade = Math.hypot(voo.vx, voo.vy);
+
+  const entPorId = new Map(entidades.map((e) => [e.id, e] as const));
   const qtdPendentes = deteccoes.filter((d) => d.status === "pendente").length;
+  const especiaisPendentes = deteccoes.filter(
+    (d) => CLASSES[d.classe].especial && d.status === "pendente",
+  ).length;
   const naoDescartadas = deteccoes.filter((d) => d.status !== "descartado");
-  const marcadores = naoDescartadas.slice(0, 8);
+
+  const marcadores: Marcador[] = naoDescartadas.slice(0, 10).map((d) => {
+    const e = d.entidadeId != null ? entPorId.get(d.entidadeId) : undefined;
+    return { d, pos: e ? { x: e.x, y: e.y } : mundoDe(d), movel: !!e };
+  });
+  const ocultas = entidades.filter((e) => !e.detectada);
+  const detectadas = entidades.length - ocultas.length;
 
   // só aparecem no vídeo as detecções que estão dentro da área da câmera
   const caixas = naoDescartadas
-    .map((d) => ({ d, p: posNoVideo(d, drone) }))
+    .map((d) => ({ d, p: posNoVideo(posDet(d, entPorId), drone) }))
     .filter(({ p }) => p.x > -10 && p.x < 110 && p.y > -10 && p.y < 110)
-    .slice(0, 5);
+    .slice(0, 8);
 
   const lista =
     filtro === "pendentes"
@@ -1370,11 +1937,11 @@ function Painel({
     },
   }[conexao];
 
-  const tecla = (k: string, rotulo: string) => (
+  const tecla = (k: string, rotuloTecla: string) => (
     <button
       key={k}
       disabled={!online}
-      aria-label={`Mover ${rotulo}`}
+      aria-label={`Mover ${rotuloTecla}`}
       onPointerDown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId);
         apertar(k);
@@ -1397,6 +1964,8 @@ function Painel({
     { id: "base", rotulo: "Retornar à base", Icon: Undo2 },
   ];
 
+  const classeAlerta = alerta ? CLASSES[alerta.classe] : null;
+
   return (
     <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100 lg:h-screen">
       {/* ───── Cabeçalho ───── */}
@@ -1416,22 +1985,22 @@ function Painel({
             Simulado
           </span>
         </div>
-        <div className="flex items-center gap-4 text-sm">
+        <div className="flex items-center gap-3 text-sm">
           <span className="hidden text-slate-400 sm:inline">
             Operador{" "}
             <span className="font-mono text-slate-200">{cpfMascarado}</span>
           </span>
           <button
-            onClick={sair}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 transition hover:border-slate-500 hover:text-white"
-          >
-            <LogOut className="h-4 w-4" /> Sair
-          </button>
-          <button
             onClick={trocarDrone}
             className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 transition hover:border-slate-500 hover:text-white"
           >
             <ArrowLeft className="h-4 w-4" /> Trocar drone
+          </button>
+          <button
+            onClick={sair}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 transition hover:border-slate-500 hover:text-white"
+          >
+            <LogOut className="h-4 w-4" /> Sair
           </button>
         </div>
       </header>
@@ -1439,6 +2008,59 @@ function Painel({
       <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_390px]">
         {/* ───── Coluna principal: visão do drone ───── */}
         <section className="min-h-0 space-y-4 overflow-y-auto p-4">
+          {/* Alerta de alvo especial */}
+          {alerta && classeAlerta && (
+            <div
+              role="alert"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-sm"
+              style={{
+                borderColor: `${classeAlerta.cor}99`,
+                background: `${classeAlerta.cor}1f`,
+              }}
+            >
+              <span className="flex items-center gap-2.5">
+                <Siren
+                  className="h-5 w-5 shrink-0 animate-pulse"
+                  style={{ color: classeAlerta.cor }}
+                />
+                <span>
+                  <span
+                    className="font-bold tracking-wide"
+                    style={{ color: classeAlerta.cor }}
+                  >
+                    ALVO ESPECIAL
+                  </span>{" "}
+                  · {classeAlerta.label} · setor {alerta.setor}
+                  <span className="block text-xs text-slate-300/80">
+                    Indicação automatizada: exige avaliação humana antes de
+                    qualquer ação.
+                  </span>
+                </span>
+              </span>
+              <span className="flex gap-2">
+                <button
+                  onClick={() => selecionar(alerta.detId)}
+                  className="rounded-md border border-white/15 px-2.5 py-1 text-xs transition hover:bg-white/10"
+                >
+                  Ver comentário
+                </button>
+                <button
+                  onClick={() => seguirAlvo(alerta.entidadeId)}
+                  className="flex items-center gap-1 rounded-md bg-white/15 px-2.5 py-1 text-xs font-medium transition hover:bg-white/25"
+                >
+                  <Crosshair className="h-3.5 w-3.5" /> Seguir alvo
+                </button>
+                <button
+                  onClick={() => setAlerta(null)}
+                  aria-label="Fechar alerta"
+                  className="rounded-md px-1.5 text-slate-300 transition hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </span>
+            </div>
+          )}
+
           {/* Faixa de conexão */}
           <div
             className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm ${banner.cor}`}
@@ -1472,9 +2094,14 @@ function Painel({
           {/* Vídeo */}
           <div
             className="relative mx-auto aspect-video w-full overflow-hidden rounded-xl border border-slate-800 bg-black"
-            style={{ maxWidth: "calc(62vh * 16 / 9)" }}
+            style={LARGURA}
           >
-            <Cena modo={modo} congelado={!online} drone={drone} />
+            <Cena
+              modo={modo}
+              congelado={!online}
+              drone={drone}
+              entidades={entidades}
+            />
 
             {/* scanlines + vinheta */}
             <div
@@ -1515,25 +2142,29 @@ function Painel({
                   key={d.id}
                   onClick={() => selecionar(d.id)}
                   aria-label={`${c.label}, confiança ${d.confianca}%`}
-                  className="absolute cursor-pointer"
+                  className={`absolute cursor-pointer ${
+                    c.especial && !ativa ? "animate-pulse" : ""
+                  }`}
                   style={{
                     left: `${p.x - d.w / 2}%`,
                     top: `${p.y - d.h / 2}%`,
                     width: `${d.w}%`,
                     height: `${d.h}%`,
-                    border: `${ativa ? 3 : 2}px solid ${c.cor}`,
+                    border: `${ativa || c.especial ? 3 : 2}px solid ${c.cor}`,
                     borderRadius: 4,
                     boxShadow: ativa
                       ? `0 0 0 2px #fff, 0 0 18px ${c.cor}`
-                      : undefined,
+                      : c.especial
+                        ? `0 0 14px ${c.cor}`
+                        : undefined,
                     opacity: online ? 1 : 0.6,
                   }}
                 >
                   <span
-                    className="absolute -top-5 left-[-2px] whitespace-nowrap rounded-sm px-1.5 py-0.5 text-[10px] font-semibold leading-none text-slate-950"
+                    className="absolute -top-5 left-[-3px] whitespace-nowrap rounded-sm px-1.5 py-0.5 text-[10px] font-bold leading-none text-slate-950"
                     style={{ background: c.cor }}
                   >
-                    {c.label} {d.confianca}%
+                    {c.curto} {d.confianca}%
                   </span>
                 </button>
               );
@@ -1594,7 +2225,7 @@ function Painel({
           {/* Controle do drone */}
           <div
             className="mx-auto w-full rounded-xl border border-slate-800 bg-slate-900/60 p-3"
-            style={{ maxWidth: "calc(62vh * 16 / 9)" }}
+            style={LARGURA}
           >
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="min-w-[14rem] flex-1">
@@ -1619,9 +2250,11 @@ function Painel({
                   ))}
                 </div>
                 <p className="mt-2 text-xs text-slate-400">
-                  {online
-                    ? "Pilote com W A S D (ou segure os botões ao lado). Qualquer comando retoma o controle manual."
-                    : "Comandos indisponíveis sem conexão. O drone mantém a posição até o link voltar."}
+                  {!online
+                    ? "Comandos indisponíveis sem conexão. O drone mantém a posição até o link voltar."
+                    : voo.modo === "seguir"
+                      ? "Seguindo um alvo. Pressione W A S D para assumir o controle manual."
+                      : "Pilote com W A S D (ou segure os botões ao lado). Qualquer comando retoma o controle manual."}
                 </p>
               </div>
 
@@ -1658,15 +2291,86 @@ function Painel({
             </div>
           </div>
 
-          {/* Mapa tático */}
+          {/* Simulação de cenário */}
           <div
-            className="mx-auto w-full"
-            style={{ maxWidth: "calc(62vh * 16 / 9)" }}
+            className="mx-auto w-full rounded-xl border border-slate-800 bg-slate-900/60 p-3"
+            style={LARGURA}
           >
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="flex items-center gap-2 text-sm font-medium">
+                <Siren className="h-4 w-4 text-sky-400" /> Simulação de cenário
+                <span className="text-xs font-normal text-slate-500">
+                  demonstração
+                </span>
+              </h3>
+              <p className="font-mono text-xs text-slate-400">
+                Entidades {entidades.length}/{MAX_ENT} · detectadas {detectadas}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {GERAR.map(({ tipo, rotulo }) => {
+                const c = CLASSES[tipo];
+                return (
+                  <button
+                    key={tipo}
+                    disabled={!online}
+                    onClick={() => gerar(tipo)}
+                    className="flex items-center gap-1.5 rounded-lg border bg-slate-950/60 px-3 py-1.5 text-xs font-medium transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{ borderColor: `${c.cor}66`, color: c.cor }}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <c.Icon className="h-3.5 w-3.5" />
+                    {rotulo}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-300">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={autoSpawn}
+                  onChange={(e) => setAutoSpawn(e.target.checked)}
+                  className="accent-sky-500"
+                />
+                Geração automática
+              </label>
+              <button
+                onClick={() => setSom((s) => !s)}
+                className="flex items-center gap-1.5 transition hover:text-white"
+              >
+                {som ? (
+                  <Volume2 className="h-3.5 w-3.5" />
+                ) : (
+                  <VolumeX className="h-3.5 w-3.5" />
+                )}
+                Alerta sonoro {som ? "ligado" : "desligado"}
+              </button>
+              <button
+                onClick={limparEntidades}
+                className="flex items-center gap-1.5 text-slate-400 transition hover:text-red-300"
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Limpar entidades
+              </button>
+            </div>
+
+            <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
+              Pessoas e veículos circulam pelas ruas. O drone só gera um
+              comentário quando a entidade entra na área da câmera. Alvos
+              especiais disparam alerta visual e sonoro.
+            </p>
+          </div>
+
+          {/* Mapa tático */}
+          <div className="mx-auto w-full" style={LARGURA}>
             <MapaTatico
               drone={drone}
+              rotulo={droneId}
               online={online}
-              deteccoes={marcadores}
+              marcadores={marcadores}
+              ocultas={ocultas}
               selecionada={selecionada}
               onSelecionar={selecionar}
             />
@@ -1707,23 +2411,23 @@ function Painel({
                 label: "Último dado",
                 valor: online ? hhmmss(agora) : `há ${semDados}s`,
               },
-            ].map(({ Icon, label, valor, alerta, pequeno }) => (
+            ].map(({ Icon, label, valor, alerta: alertaBat, pequeno }) => (
               <div
                 key={label}
                 className={`rounded-lg border bg-slate-900/60 p-3 ${
-                  alerta ? "border-red-500/40" : "border-slate-800"
+                  alertaBat ? "border-red-500/40" : "border-slate-800"
                 } ${online ? "" : "opacity-50"}`}
               >
                 <div className="mb-1 flex items-center gap-1.5 text-xs text-slate-400">
                   <Icon
-                    className={`h-3.5 w-3.5 ${alerta ? "text-red-400" : ""}`}
+                    className={`h-3.5 w-3.5 ${alertaBat ? "text-red-400" : ""}`}
                   />
                   {label}
                 </div>
                 <p
                   className={`font-mono font-medium ${
                     pequeno ? "text-xs" : "text-lg"
-                  } ${alerta ? "text-red-300" : "text-slate-100"}`}
+                  } ${alertaBat ? "text-red-300" : "text-slate-100"}`}
                 >
                   {valor}
                 </p>
@@ -1741,18 +2445,28 @@ function Painel({
         {/* ───── Painel lateral: comentários da IA ───── */}
         <aside className="flex h-[34rem] min-h-0 flex-col border-t border-slate-800 bg-slate-900/40 lg:h-auto lg:border-l lg:border-t-0">
           <div className="space-y-3 border-b border-slate-800 p-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="flex items-center gap-2 font-medium">
                 <Bot className="h-5 w-5 text-sky-400" /> Análise da IA
               </h2>
-              <span
-                className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                  qtdPendentes > 0
-                    ? "bg-amber-500/15 text-amber-300"
-                    : "bg-slate-800 text-slate-400"
-                }`}
-              >
-                {qtdPendentes} pendente{qtdPendentes === 1 ? "" : "s"}
+              <span className="flex items-center gap-2">
+                {especiaisPendentes > 0 && (
+                  <span className="flex animate-pulse items-center gap-1 rounded-full bg-red-500/20 px-2.5 py-0.5 text-xs font-semibold text-red-300">
+                    <Siren className="h-3 w-3" />
+                    {especiaisPendentes} alvo
+                    {especiaisPendentes === 1 ? "" : "s"} especia
+                    {especiaisPendentes === 1 ? "l" : "is"}
+                  </span>
+                )}
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    qtdPendentes > 0
+                      ? "bg-amber-500/15 text-amber-300"
+                      : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  {qtdPendentes} pendente{qtdPendentes === 1 ? "" : "s"}
+                </span>
               </span>
             </div>
 
@@ -1790,6 +2504,8 @@ function Painel({
               const c = CLASSES[d.classe];
               const p = PRIORIDADES[d.prioridade];
               const ativa = selecionada === d.id;
+              const seguivel =
+                d.entidadeId != null && entPorId.has(d.entidadeId);
               return (
                 <li
                   key={d.id}
@@ -1800,11 +2516,32 @@ function Painel({
                       ? "border-sky-400/60 bg-slate-800/80"
                       : "border-slate-800 bg-slate-900/70 hover:border-slate-700"
                   } ${d.status === "descartado" ? "opacity-50" : ""}`}
+                  style={
+                    c.especial
+                      ? {
+                          borderColor: ativa ? c.cor : `${c.cor}88`,
+                          boxShadow: `0 0 0 1px ${c.cor}33`,
+                        }
+                      : undefined
+                  }
                 >
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
+                  {c.especial && (
+                    <span
+                      className="mb-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold tracking-wide"
+                      style={{
+                        color: c.cor,
+                        background: `${c.cor}1f`,
+                        borderColor: `${c.cor}55`,
+                      }}
+                    >
+                      <Siren className="h-3 w-3" /> ALVO ESPECIAL
+                    </span>
+                  )}
+
+                  <div className="mb-2 flex items-start justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span
-                        className="flex h-7 w-7 items-center justify-center rounded-full"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full"
                         style={{ background: `${c.cor}22`, color: c.cor }}
                       >
                         <c.Icon className="h-4 w-4" />
@@ -1847,6 +2584,12 @@ function Painel({
 
                   <p className="mb-3 text-[11px] text-slate-500">
                     {c.fonte} · {MODELO_IA}
+                    {d.ref && (
+                      <span className="mt-1 block text-fuchsia-300/80">
+                        Referência simulada {d.ref} · não é identificação por
+                        imagem
+                      </span>
+                    )}
                     {d.sincronizado && (
                       <span className="ml-1.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-300">
                         sincronizado do buffer
@@ -1874,6 +2617,17 @@ function Painel({
                       >
                         <X className="h-3.5 w-3.5" /> Descartar
                       </button>
+                      {seguivel && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            seguirAlvo(d.entidadeId as number);
+                          }}
+                          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-sky-500/15 py-1.5 text-xs font-medium text-sky-300 transition hover:bg-sky-500/25"
+                        >
+                          <Crosshair className="h-3.5 w-3.5" /> Seguir
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <div className="flex items-center justify-between text-xs">
