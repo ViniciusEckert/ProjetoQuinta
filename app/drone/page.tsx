@@ -1,6 +1,14 @@
 "use client";
 
-import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { useRouter } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -45,6 +53,12 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
+import { FeedSatelite, MapaReal } from "./mapas";
+import type { MarcadorMapa, OcultaMapa } from "./mapas";
+import ruasJson from "./ruas.json";
+
+// true = abre no mapa real (MapLibre). false = abre no mapa clássico (SVG).
+const MAPA_PADRAO_REAL = true;
 
 /* ───────────── Tipos ───────────── */
 
@@ -77,12 +91,14 @@ interface Deteccao {
 interface Entidade {
   id: number;
   tipo: TipoEntidade;
-  rua: number; // índice em RUAS
+  rua: number; // índice na lista de ruas ativa
+  s: number; // distância percorrida ao longo da rua
   dir: 1 | -1;
-  v: number; // velocidade (m/s)
-  off: number; // deslocamento lateral na rua
+  v: number;
+  off: number;
   x: number;
   y: number;
+  ang: number; // direção em graus
   detectada: boolean;
 }
 
@@ -295,7 +311,7 @@ function quadrante(x: number, y: number) {
 function criarDeteccao(
   id: number,
   classe: Classe,
-  opts: { hora?: Date; confianca?: number; sincronizado?: boolean } = {},
+  opts: { hora?: Date; confianca?: number; sincronizado?: boolean } = {}
 ): Deteccao {
   const c = CLASSES[classe];
   const jitter = () => (Math.random() - 0.5) * 6;
@@ -304,18 +320,18 @@ function criarDeteccao(
   const confianca = opts.confianca ?? Math.round(62 + Math.random() * 34);
   const textos = TEXTOS[classe];
   const texto = textos[Math.floor(Math.random() * textos.length)](
-    quadrante(x, y),
+    quadrante(x, y)
   );
   const prioridade: Prioridade =
     classe === "pessoa"
       ? "critica"
       : classe === "calor"
-        ? confianca >= 80
-          ? "critica"
-          : "media"
-        : classe === "fumaca"
-          ? "media"
-          : "baixa";
+      ? confianca >= 80
+        ? "critica"
+        : "media"
+      : classe === "fumaca"
+      ? "media"
+      : "baixa";
 
   return {
     id,
@@ -389,8 +405,13 @@ const ORB = { rx: 72, ry: 36 }; // raio da patrulha automática
 function latLng(x: number, y: number) {
   return {
     lat: LAT0 - (y - HOME.y) / K,
-    lng: LNG0 + (x - HOME.x) / K,
+    lng: LNG0 + (x - HOME.x) / (K * Math.cos((LAT0 * Math.PI) / 180)),
   };
+}
+
+function paraGeo(x: number, y: number): [number, number] {
+  const { lat, lng } = latLng(x, y);
+  return [lng, lat];
 }
 
 // posição fixa de uma detecção "estática" no mundo
@@ -402,10 +423,7 @@ function mundoDe(d: Deteccao) {
 }
 
 // onde um ponto do mundo aparece no vídeo (em %), dado onde o drone está
-function posNoVideo(
-  m: { x: number; y: number },
-  drone: { x: number; y: number },
-) {
+function posNoVideo(m: { x: number; y: number }, drone: { x: number; y: number }) {
   return {
     x: ((m.x - (drone.x - FOOT.w / 2)) / FOOT.w) * 100,
     y: ((m.y - (drone.y - FOOT.h / 2)) / FOOT.h) * 100,
@@ -504,13 +522,7 @@ const ROWS = [
   [138, 252],
   [268, 392],
 ];
-const QUADRAS: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  verde: boolean;
-}[] = [];
+const QUADRAS: { x: number; y: number; w: number; h: number; verde: boolean }[] = [];
 COLS.forEach(([x0, x1], ci) =>
   ROWS.forEach(([y0, y1], ri) => {
     if (ci === 1 && ri === 1) return;
@@ -519,13 +531,7 @@ COLS.forEach(([x0, x1], ci) =>
     const seed = ci * 3 + ri;
     const cut = 0.4 + ((seed * 37) % 30) / 100;
     const parque = seed === 0 || seed === 8;
-    QUADRAS.push({
-      x: x0 + 4,
-      y: y0 + 4,
-      w: w * cut - 8,
-      h: h - 8,
-      verde: parque,
-    });
+    QUADRAS.push({ x: x0 + 4, y: y0 + 4, w: w * cut - 8, h: h - 8, verde: parque });
     QUADRAS.push({
       x: x0 + w * cut + 4,
       y: y0 + 4,
@@ -540,7 +546,7 @@ COLS.forEach(([x0, x1], ci) =>
       h: h * 0.4 - 8,
       verde: false,
     });
-  }),
+  })
 );
 
 // Prédios e árvores do bairro monitorado: [x, y, largura, altura]
@@ -592,13 +598,7 @@ const ARVORES_PARQUE: [number, number, number][] = [];
 });
 
 // prédios de cada quadra, divididos ao longo do lado maior
-const PREDIOS_QUADRA: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  i: number;
-}[] = [];
+const PREDIOS_QUADRA: { x: number; y: number; w: number; h: number; i: number }[] = [];
 QUADRAS.forEach((q, qi) => {
   if (q.verde) return;
   const horiz = q.w >= q.h;
@@ -606,22 +606,10 @@ QUADRAS.forEach((q, qi) => {
   for (let k = 0; k < n; k++) {
     if (horiz) {
       const w = q.w / n;
-      PREDIOS_QUADRA.push({
-        x: q.x + k * w + 0.7,
-        y: q.y,
-        w: w - 1.4,
-        h: q.h,
-        i: qi * 7 + k,
-      });
+      PREDIOS_QUADRA.push({ x: q.x + k * w + 0.7, y: q.y, w: w - 1.4, h: q.h, i: qi * 7 + k });
     } else {
       const h = q.h / n;
-      PREDIOS_QUADRA.push({
-        x: q.x,
-        y: q.y + k * h + 0.7,
-        w: q.w,
-        h: h - 1.4,
-        i: qi * 7 + k,
-      });
+      PREDIOS_QUADRA.push({ x: q.x, y: q.y + k * h + 0.7, w: q.w, h: h - 1.4, i: qi * 7 + k });
     }
   }
 });
@@ -634,50 +622,17 @@ const ZEBRAS = [
 ];
 
 function Predio({
-  x,
-  y,
-  w,
-  h,
-  i,
-  p,
+  x, y, w, h, i, p,
 }: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  i: number;
-  p: Paleta;
+  x: number; y: number; w: number; h: number; i: number; p: Paleta;
 }) {
   const s = 1.8 * (0.7 + hash(i) * 1.1); // sombra proporcional à "altura"
   return (
     <g>
       <rect x={x + s} y={y + s} width={w} height={h} fill={p.sombra} />
-      <rect
-        x={x}
-        y={y}
-        width={w}
-        height={h}
-        fill={p.predio}
-        stroke={p.borda}
-        strokeWidth={p.borda ? 0.5 : 0}
-      />
-      {p.topo && (
-        <rect
-          x={x + 0.8}
-          y={y + 0.8}
-          width={w - 1.6}
-          height={h - 1.6}
-          fill={p.topo}
-        />
-      )}
-      <rect
-        x={x}
-        y={y}
-        width={w}
-        height={h}
-        fill="#000"
-        opacity={0.03 + hash(i + 9) * 0.16}
-      />
+      <rect x={x} y={y} width={w} height={h} fill={p.predio} stroke={p.borda} strokeWidth={p.borda ? 0.5 : 0} />
+      {p.topo && <rect x={x + 0.8} y={y + 0.8} width={w - 1.6} height={h - 1.6} fill={p.topo} />}
+      <rect x={x} y={y} width={w} height={h} fill="#000" opacity={0.03 + hash(i + 9) * 0.16} />
       <rect
         x={x + w * 0.18}
         y={y + h * 0.22}
@@ -691,26 +646,10 @@ function Predio({
   );
 }
 
-function Arvore({
-  x,
-  y,
-  r,
-  p,
-}: {
-  x: number;
-  y: number;
-  r: number;
-  p: Paleta;
-}) {
+function Arvore({ x, y, r, p }: { x: number; y: number; r: number; p: Paleta }) {
   return (
     <g>
-      <ellipse
-        cx={x + r * 0.45}
-        cy={y + r * 0.45}
-        rx={r}
-        ry={r * 0.9}
-        fill={p.sombra}
-      />
+      <ellipse cx={x + r * 0.45} cy={y + r * 0.45} rx={r} ry={r * 0.9} fill={p.sombra} />
       <circle cx={x} cy={y} r={r} fill={p.arvore} />
       <circle cx={x - r * 0.15} cy={y - r * 0.15} r={r * 0.78} fill={p.copa} />
     </g>
@@ -740,29 +679,11 @@ const Mundo = memo(function Mundo({
 
       {grade &&
         Array.from({ length: MAP_W / 40 + 1 }, (_, i) => (
-          <line
-            key={`gx${i}`}
-            x1={i * 40}
-            y1="0"
-            x2={i * 40}
-            y2={MAP_H}
-            stroke="#1e293b"
-            strokeWidth="0.4"
-            opacity="0.6"
-          />
+          <line key={`gx${i}`} x1={i * 40} y1="0" x2={i * 40} y2={MAP_H} stroke="#1e293b" strokeWidth="0.4" opacity="0.6" />
         ))}
       {grade &&
         Array.from({ length: MAP_H / 40 + 1 }, (_, i) => (
-          <line
-            key={`gy${i}`}
-            x1="0"
-            y1={i * 40}
-            x2={MAP_W}
-            y2={i * 40}
-            stroke="#1e293b"
-            strokeWidth="0.4"
-            opacity="0.6"
-          />
+          <line key={`gy${i}`} x1="0" y1={i * 40} x2={MAP_W} y2={i * 40} stroke="#1e293b" strokeWidth="0.4" opacity="0.6" />
         ))}
 
       {/* lotes e parques */}
@@ -782,29 +703,12 @@ const Mundo = memo(function Mundo({
 
       {/* lago */}
       <ellipse cx="52" cy="72" rx="22" ry="14" fill={p.agua} />
-      <ellipse
-        cx="52"
-        cy="72"
-        rx="22"
-        ry="14"
-        fill="none"
-        stroke={p.copa}
-        strokeWidth="1"
-        opacity="0.5"
-      />
+      <ellipse cx="52" cy="72" rx="22" ry="14" fill="none" stroke={p.copa} strokeWidth="1" opacity="0.5" />
       <ellipse cx="46" cy="68" rx="9" ry="4" fill="#fff" opacity="0.12" />
 
       {/* calçadas */}
       {RUAS.map((r, i) => (
-        <line
-          key={`c${i}`}
-          x1={r.x1}
-          y1={r.y1}
-          x2={r.x2}
-          y2={r.y2}
-          stroke={p.calcada}
-          strokeWidth={r.w + 5}
-        />
+        <line key={`c${i}`} x1={r.x1} y1={r.y1} x2={r.x2} y2={r.y2} stroke={p.calcada} strokeWidth={r.w + 5} />
       ))}
 
       {/* asfalto, bordas e faixa central */}
@@ -819,14 +723,7 @@ const Mundo = memo(function Mundo({
           : { x1: r.x1 + o, y1: r.y1, x2: r.x2 + o, y2: r.y2 };
         return (
           <g key={`r${i}`}>
-            <line
-              x1={r.x1}
-              y1={r.y1}
-              x2={r.x2}
-              y2={r.y2}
-              stroke={p.rua}
-              strokeWidth={r.w}
-            />
+            <line x1={r.x1} y1={r.y1} x2={r.x2} y2={r.y2} stroke={p.rua} strokeWidth={r.w} />
             {r.w >= 6 && (
               <>
                 <line {...l1} stroke={p.faixa} strokeWidth="0.35" />
@@ -834,10 +731,7 @@ const Mundo = memo(function Mundo({
               </>
             )}
             <line
-              x1={r.x1}
-              y1={r.y1}
-              x2={r.x2}
-              y2={r.y2}
+              x1={r.x1} y1={r.y1} x2={r.x2} y2={r.y2}
               stroke={p.centro}
               strokeWidth={Math.max(0.3, r.w * 0.04)}
               strokeDasharray={`${r.w * 0.4} ${r.w * 0.4}`}
@@ -852,20 +746,10 @@ const Mundo = memo(function Mundo({
           {[-1, 1].flatMap((s) =>
             Array.from({ length: 5 }, (_, k) => (
               <g key={`${s}${k}`}>
-                <rect
-                  x={cx + s * 12 - 1}
-                  y={cy - 5 + k * 2.4}
-                  width="2"
-                  height="1.2"
-                />
-                <rect
-                  x={cx - 5 + k * 2.4}
-                  y={cy + s * 12 - 1}
-                  width="1.2"
-                  height="2"
-                />
+                <rect x={cx + s * 12 - 1} y={cy - 5 + k * 2.4} width="2" height="1.2" />
+                <rect x={cx - 5 + k * 2.4} y={cy + s * 12 - 1} width="1.2" height="2" />
               </g>
-            )),
+            ))
           )}
         </g>
       ))}
@@ -879,35 +763,13 @@ const Mundo = memo(function Mundo({
       ))}
 
       {/* hospital (cruz no telhado) */}
-      <rect
-        x="615"
-        y="54"
-        width="22"
-        height="22"
-        rx="2"
-        fill="#fff"
-        opacity="0.9"
-      />
+      <rect x="615" y="54" width="22" height="22" rx="2" fill="#fff" opacity="0.9" />
       <rect x="624" y="57" width="4" height="16" fill="#dc2626" />
       <rect x="618" y="63" width="16" height="4" fill="#dc2626" />
 
       {/* heliponto da base */}
-      <circle
-        cx={HOME.x}
-        cy={HOME.y}
-        r="5"
-        fill="#1f2937"
-        stroke="#facc15"
-        strokeWidth="0.5"
-      />
-      <text
-        x={HOME.x}
-        y={HOME.y + 2}
-        textAnchor="middle"
-        fontSize="6"
-        fontWeight="700"
-        fill="#facc15"
-      >
+      <circle cx={HOME.x} cy={HOME.y} r="5" fill="#1f2937" stroke="#facc15" strokeWidth="0.5" />
+      <text x={HOME.x} y={HOME.y + 2} textAnchor="middle" fontSize="6" fontWeight="700" fill="#facc15">
         H
       </text>
 
@@ -922,59 +784,19 @@ const Mundo = memo(function Mundo({
       {/* nomes (só no mapa) */}
       {rotulos && (
         <g fontSize="6" letterSpacing="0.6">
-          <text x="140" y="132" {...txt}>
-            AV. CENTRAL
-          </text>
-          <text x="660" y="132" {...txt}>
-            AV. CENTRAL
-          </text>
-          <text x="150" y="262" {...txt}>
-            R. DAS FLORES
-          </text>
-          <text x="640" y="262" {...txt}>
-            R. DAS FLORES
-          </text>
-          <text
-            transform="translate(242 60) rotate(-90)"
-            textAnchor="middle"
-            {...txt}
-          >
-            R. PARANÁ
-          </text>
-          <text
-            transform="translate(242 330) rotate(-90)"
-            textAnchor="middle"
-            {...txt}
-          >
-            R. PARANÁ
-          </text>
-          <text
-            transform="translate(562 60) rotate(-90)"
-            textAnchor="middle"
-            {...txt}
-          >
-            AV. BRASIL
-          </text>
-          <text
-            transform="translate(562 330) rotate(-90)"
-            textAnchor="middle"
-            {...txt}
-          >
-            AV. BRASIL
-          </text>
+          <text x="140" y="132" {...txt}>AV. CENTRAL</text>
+          <text x="660" y="132" {...txt}>AV. CENTRAL</text>
+          <text x="150" y="262" {...txt}>R. DAS FLORES</text>
+          <text x="640" y="262" {...txt}>R. DAS FLORES</text>
+          <text transform="translate(242 60) rotate(-90)" textAnchor="middle" {...txt}>R. PARANÁ</text>
+          <text transform="translate(242 330) rotate(-90)" textAnchor="middle" {...txt}>R. PARANÁ</text>
+          <text transform="translate(562 60) rotate(-90)" textAnchor="middle" {...txt}>AV. BRASIL</text>
+          <text transform="translate(562 330) rotate(-90)" textAnchor="middle" {...txt}>AV. BRASIL</text>
           <g fontSize="5">
-            <text x="626" y="88" textAnchor="middle" {...txt}>
-              Hospital Municipal
-            </text>
-            <text x="68" y="332" textAnchor="middle" {...txt}>
-              Escola Municipal
-            </text>
-            <text x="52" y="100" textAnchor="middle" {...txt}>
-              Parque
-            </text>
-            <text x={HOME.x} y={HOME.y - 8} textAnchor="middle" {...txt}>
-              Base DIAPB
-            </text>
+            <text x="626" y="88" textAnchor="middle" {...txt}>Hospital Municipal</text>
+            <text x="68" y="332" textAnchor="middle" {...txt}>Escola Municipal</text>
+            <text x="52" y="100" textAnchor="middle" {...txt}>Parque</text>
+            <text x={HOME.x} y={HOME.y - 8} textAnchor="middle" {...txt}>Base DIAPB</text>
           </g>
         </g>
       )}
@@ -986,106 +808,136 @@ const Mundo = memo(function Mundo({
 
 const ehHoriz = (r: (typeof RUAS)[number]) => r.y1 === r.y2;
 
-function posRua(r: (typeof RUAS)[number], along: number, off: number) {
-  return ehHoriz(r) ? { x: along, y: r.y1 + off } : { x: r.x1 + off, y: along };
+interface Rua {
+  w: number;
+  pts: [number, number][];
+  acum: number[];
+  total: number;
 }
 
-// escolhe um ponto aleatório numa rua a até `raio` metros de `ref`
-function pontoNaRua(
-  ref: { x: number; y: number },
-  raio: number,
-  larguraMin = 0,
-) {
-  const candidatas: { i: number; min: number; max: number }[] = [];
-  RUAS.forEach((r, i) => {
-    if (r.w < larguraMin) return;
-    const horiz = ehHoriz(r);
-    const eixoRef = horiz ? ref.x : ref.y;
-    const cruz = horiz ? Math.abs(ref.y - r.y1) : Math.abs(ref.x - r.x1);
-    if (cruz > raio) return;
-    const meio = Math.sqrt(raio * raio - cruz * cruz);
-    const ini = horiz ? r.x1 : r.y1;
-    const fim = horiz ? r.x2 : r.y2;
-    const min = Math.max(ini + 4, eixoRef - meio);
-    const max = Math.min(fim - 4, eixoRef + meio);
-    if (max > min) candidatas.push({ i, min, max });
-  });
-  if (!candidatas.length) return null;
-  const c = candidatas[Math.floor(Math.random() * candidatas.length)];
-  return { rua: c.i, along: c.min + Math.random() * (c.max - c.min) };
+function criarRua(w: number, pts: [number, number][]): Rua {
+  const acum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    acum.push(
+      acum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+    );
+  }
+  return { w, pts, acum, total: acum[acum.length - 1] };
+}
+
+const RUAS_CLASSICO: Rua[] = RUAS.map((r) =>
+  criarRua(r.w, [
+    [r.x1, r.y1],
+    [r.x2, r.y2],
+  ])
+);
+const RUAS_REAIS: Rua[] = (
+  ruasJson as unknown as { w: number; pts: [number, number][] }[]
+)
+  .filter((r) => r.pts.length >= 2)
+  .map((r) => criarRua(r.w, r.pts));
+
+const ruasDoModo = (real: boolean) =>
+  real && RUAS_REAIS.length ? RUAS_REAIS : RUAS_CLASSICO;
+
+function pontoEm(r: Rua, s: number, off: number) {
+  let i = 1;
+  while (i < r.acum.length - 1 && r.acum[i] < s) i++;
+  const [x0, y0] = r.pts[i - 1];
+  const [x1, y1] = r.pts[i];
+  const seg = r.acum[i] - r.acum[i - 1] || 1;
+  const t = clamp((s - r.acum[i - 1]) / seg, 0, 1);
+  const dx = (x1 - x0) / seg;
+  const dy = (y1 - y0) / seg;
+  return {
+    x: x0 + (x1 - x0) * t - dy * off,
+    y: y0 + (y1 - y0) * t + dx * off,
+    ang: (Math.atan2(dy, dx) * 180) / Math.PI,
+  };
 }
 
 function criarEntidade(
   id: number,
   tipo: TipoEntidade,
   ref: { x: number; y: number },
-  visivel: boolean, // true: já dentro da área da câmera; false: fora dela
+  visivel: boolean, // true: dentro da área da câmera; false: fora dela
+  ruas: Rua[]
 ): Entidade {
-  const larguraMin = tipo === "veiculo" ? 6 : 0;
-  let ponto: { rua: number; along: number } | null = null;
+  const todas = ruas.map((r, i) => ({ r, i }));
+  const aptas = todas.filter(
+    ({ r }) => r.w >= (tipo === "veiculo" ? 6 : 0) && r.total > 12
+  );
+  const usar = aptas.length ? aptas : todas;
 
-  for (let i = 0; i < 14 && !ponto; i++) {
-    const p = pontoNaRua(ref, visivel ? 40 : 110, larguraMin);
-    if (!p) continue;
-    const q = posRua(RUAS[p.rua], p.along, 0);
-    const dentro =
-      Math.abs(q.x - ref.x) < FOOT.w / 2 - 6 &&
-      Math.abs(q.y - ref.y) < FOOT.h / 2 - 5;
-    const fora =
-      Math.abs(q.x - ref.x) > FOOT.w / 2 + 6 ||
-      Math.abs(q.y - ref.y) > FOOT.h / 2 + 6;
-    if (visivel ? dentro : fora) ponto = p;
+  let melhor: { i: number; s: number; off: number; x: number; y: number } | null = null;
+  for (let k = 0; k < 60; k++) {
+    const { r, i } = usar[Math.floor(Math.random() * usar.length)];
+    const s = 4 + Math.random() * Math.max(1, r.total - 8);
+    const lado = Math.random() < 0.5 ? -1 : 1;
+    const off =
+      tipo === "veiculo" ? lado * r.w * 0.2 : lado * Math.max(0.5, r.w / 2 - 1.2);
+    const p = pontoEm(r, s, off);
+    const dx = Math.abs(p.x - ref.x);
+    const dy = Math.abs(p.y - ref.y);
+    if (Math.hypot(dx, dy) > (visivel ? 45 : 130)) continue;
+    const dentro = dx < FOOT.w / 2 - 6 && dy < FOOT.h / 2 - 5;
+    const fora = dx > FOOT.w / 2 + 6 || dy > FOOT.h / 2 + 6;
+    const cand = { i, s, off, x: p.x, y: p.y };
+    if (visivel ? dentro : fora) {
+      melhor = cand;
+      break;
+    }
+    melhor = melhor ?? cand;
   }
-  if (!ponto) {
-    ponto = pontoNaRua(ref, 120, larguraMin) ??
-      pontoNaRua(ref, 1000, larguraMin) ?? { rua: 0, along: 100 };
+  if (!melhor) {
+    const { r, i } = usar[0];
+    const p = pontoEm(r, r.total / 2, 0);
+    melhor = { i, s: r.total / 2, off: 0, x: p.x, y: p.y };
   }
 
-  const r = RUAS[ponto.rua];
-  const lado = Math.random() < 0.5 ? -1 : 1;
-  const off =
-    tipo === "veiculo" ? lado * r.w * 0.2 : lado * Math.max(0.5, r.w / 2 - 1.2);
+  const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
   const v =
     tipo === "ferido"
       ? 0
       : tipo === "veiculo"
-        ? 6 + Math.random() * 3
-        : tipo === "armado"
-          ? 1.7 + Math.random() * 0.6
-          : 1.2 + Math.random() * 0.6;
-  const pos = posRua(r, ponto.along, off);
+      ? 6 + Math.random() * 3
+      : tipo === "armado"
+      ? 1.7 + Math.random() * 0.6
+      : 1.2 + Math.random() * 0.6;
+  const p = pontoEm(ruas[melhor.i], melhor.s, melhor.off);
 
   return {
     id,
     tipo,
-    rua: ponto.rua,
-    dir: Math.random() < 0.5 ? 1 : -1,
+    rua: melhor.i,
+    s: melhor.s,
+    dir,
     v,
-    off,
-    x: pos.x,
-    y: pos.y,
+    off: melhor.off,
+    x: p.x,
+    y: p.y,
+    ang: p.ang + (dir === -1 ? 180 : 0),
     detectada: false,
   };
 }
 
-function moverEntidade(e: Entidade, dt: number): Entidade {
+function moverEntidade(e: Entidade, dt: number, ruas: Rua[]): Entidade {
   if (e.v === 0) return e;
-  const r = RUAS[e.rua];
-  const horiz = ehHoriz(r);
-  const ini = (horiz ? r.x1 : r.y1) + 2;
-  const fim = (horiz ? r.x2 : r.y2) - 2;
-  let along = (horiz ? e.x : e.y) + e.dir * e.v * dt;
+  const r = ruas[e.rua];
+  if (!r) return e;
+  let s = e.s + e.dir * e.v * dt;
   let dir = e.dir;
-  if (along < ini) {
-    along = ini;
+  if (s < 2) {
+    s = 2;
     dir = 1;
-  } else if (along > fim) {
-    along = fim;
+  } else if (s > r.total - 2) {
+    s = r.total - 2;
     dir = -1;
   } else if (e.tipo !== "veiculo" && Math.random() < dt * 0.04) {
-    dir = dir === 1 ? -1 : 1; // pedestre muda de sentido de vez em quando
+    dir = dir === 1 ? -1 : 1;
   }
-  return horiz ? { ...e, x: along, dir } : { ...e, y: along, dir };
+  const p = pontoEm(r, s, e.off);
+  return { ...e, s, dir, x: p.x, y: p.y, ang: p.ang + (dir === -1 ? 180 : 0) };
 }
 
 function tipoAleatorio(): TipoEntidade {
@@ -1100,7 +952,7 @@ function tipoAleatorio(): TipoEntidade {
 function dentroDaCamera(
   e: { x: number; y: number },
   v: { x: number; y: number },
-  f = 0.92,
+  f = 0.92
 ) {
   return (
     Math.abs(e.x - v.x) < (FOOT.w / 2) * f &&
@@ -1112,7 +964,7 @@ function dentroDaCamera(
 function criarDeteccaoEntidade(
   id: number,
   e: Entidade,
-  drone: { x: number; y: number },
+  drone: { x: number; y: number }
 ): Deteccao {
   const c = CLASSES[e.tipo];
   const vp = posNoVideo(e, drone);
@@ -1126,8 +978,7 @@ function criarDeteccaoEntidade(
     w: c.ancora.w,
     h: c.ancora.h,
     confianca: Math.round(
-      (e.tipo === "mandado" ? 60 : 64) +
-        Math.random() * (e.tipo === "mandado" ? 25 : 30),
+      (e.tipo === "mandado" ? 60 : 64) + Math.random() * (e.tipo === "mandado" ? 25 : 30)
     ),
     prioridade: PRIORIDADE_ENT[e.tipo],
     hora: new Date(),
@@ -1155,7 +1006,7 @@ function passoVoo(
   dx: number,
   dy: number,
   dt: number,
-  alvoPos: { x: number; y: number } | null,
+  alvoPos: { x: number; y: number } | null
 ): Voo {
   // parado e sem comando: nada a atualizar
   if (v.modo === "manual" && !dx && !dy && Math.hypot(v.vx, v.vy) < 0.01) {
@@ -1222,22 +1073,8 @@ function passoVoo(
 
 /* ───────────── Vídeo: visão aérea recortada na posição do drone ───────────── */
 
-const CARROS = [
-  "#e5e7eb",
-  "#b91c1c",
-  "#1d4ed8",
-  "#facc15",
-  "#1f2937",
-  "#16a34a",
-];
-const CAMISAS = [
-  "#ef4444",
-  "#3b82f6",
-  "#22c55e",
-  "#f59e0b",
-  "#a855f7",
-  "#e5e7eb",
-];
+const CARROS = ["#e5e7eb", "#b91c1c", "#1d4ed8", "#facc15", "#1f2937", "#16a34a"];
+const CAMISAS = ["#ef4444", "#3b82f6", "#22c55e", "#f59e0b", "#a855f7", "#e5e7eb"];
 const CABELOS = ["#1f2937", "#78350f", "#d6b88a", "#111827"];
 
 function EntidadeSvg({
@@ -1249,8 +1086,7 @@ function EntidadeSvg({
   t: boolean;
   pausado: boolean;
 }) {
-  const horiz = ehHoriz(RUAS[e.rua]);
-  const ang = horiz ? (e.dir === 1 ? 0 : 180) : e.dir === 1 ? 90 : 270;
+  const ang = e.ang;
 
   /* ── Veículo, visto de cima ── */
   if (e.tipo === "veiculo") {
@@ -1260,71 +1096,17 @@ function EntidadeSvg({
     const cor = t ? "#3b2f7a" : CARROS[e.id % CARROS.length];
     return (
       <g transform={`translate(${e.x} ${e.y}) rotate(${ang})`}>
-        <rect
-          x={-L / 2 + 0.5}
-          y={-W / 2 + 0.5}
-          width={L}
-          height={W}
-          rx="0.6"
-          fill="rgba(0,0,0,0.35)"
-        />
+        <rect x={-L / 2 + 0.5} y={-W / 2 + 0.5} width={L} height={W} rx="0.6" fill="rgba(0,0,0,0.35)" />
         <rect x={-L / 2} y={-W / 2} width={L} height={W} rx="0.7" fill={cor} />
         {!t && (
           <>
-            <rect
-              x={L * 0.08}
-              y={-W / 2 + 0.25}
-              width={L * 0.2}
-              height={W - 0.5}
-              rx="0.3"
-              fill="#0f172a"
-              opacity="0.75"
-            />
-            <rect
-              x={-L * 0.34}
-              y={-W / 2 + 0.3}
-              width={L * 0.18}
-              height={W - 0.6}
-              rx="0.3"
-              fill="#0f172a"
-              opacity="0.6"
-            />
-            <rect
-              x={-L * 0.12}
-              y={-W / 2 + 0.2}
-              width={L * 0.18}
-              height={W - 0.4}
-              fill="#fff"
-              opacity="0.12"
-            />
-            <rect
-              x={L / 2 - 0.35}
-              y={-W / 2 + 0.2}
-              width="0.35"
-              height="0.45"
-              fill="#fef9c3"
-            />
-            <rect
-              x={L / 2 - 0.35}
-              y={W / 2 - 0.65}
-              width="0.35"
-              height="0.45"
-              fill="#fef9c3"
-            />
-            <rect
-              x={-L / 2}
-              y={-W / 2 + 0.2}
-              width="0.3"
-              height="0.45"
-              fill="#ef4444"
-            />
-            <rect
-              x={-L / 2}
-              y={W / 2 - 0.65}
-              width="0.3"
-              height="0.45"
-              fill="#ef4444"
-            />
+            <rect x={L * 0.08} y={-W / 2 + 0.25} width={L * 0.2} height={W - 0.5} rx="0.3" fill="#0f172a" opacity="0.75" />
+            <rect x={-L * 0.34} y={-W / 2 + 0.3} width={L * 0.18} height={W - 0.6} rx="0.3" fill="#0f172a" opacity="0.6" />
+            <rect x={-L * 0.12} y={-W / 2 + 0.2} width={L * 0.18} height={W - 0.4} fill="#fff" opacity="0.12" />
+            <rect x={L / 2 - 0.35} y={-W / 2 + 0.2} width="0.35" height="0.45" fill="#fef9c3" />
+            <rect x={L / 2 - 0.35} y={W / 2 - 0.65} width="0.35" height="0.45" fill="#fef9c3" />
+            <rect x={-L / 2} y={-W / 2 + 0.2} width="0.3" height="0.45" fill="#ef4444" />
+            <rect x={-L / 2} y={W / 2 - 0.65} width="0.3" height="0.45" fill="#ef4444" />
           </>
         )}
         {t && <circle cx={L * 0.3} cy="0" r="1.8" fill="url(#body)" />}
@@ -1335,11 +1117,7 @@ function EntidadeSvg({
   /* ── Pessoa, vista de cima ── */
   const deitado = e.tipo === "ferido";
   const andando = !deitado && e.v > 0;
-  const camisa = t
-    ? "#fb923c"
-    : e.tipo === "armado"
-      ? "#1f2937"
-      : CAMISAS[e.id % CAMISAS.length];
+  const camisa = t ? "#fb923c" : e.tipo === "armado" ? "#1f2937" : CAMISAS[e.id % CAMISAS.length];
   const cabelo = t ? "#fff7ae" : CABELOS[e.id % CABELOS.length];
   const pele = t ? "#fde68a" : "#e8b894";
   const ani = (reverso: boolean) => ({
@@ -1348,61 +1126,23 @@ function EntidadeSvg({
   });
 
   return (
-    <g
-      transform={`translate(${e.x} ${e.y}) rotate(${deitado ? 20 : ang}) scale(1.3)`}
-    >
+    <g transform={`translate(${e.x} ${e.y}) rotate(${deitado ? 20 : ang}) scale(1.3)`}>
       {t && <circle r="2.6" fill="url(#body)" />}
       {deitado ? (
         <>
-          <ellipse
-            cx="0.3"
-            cy="0.3"
-            rx="1.0"
-            ry="0.42"
-            fill="rgba(0,0,0,0.35)"
-          />
+          <ellipse cx="0.3" cy="0.3" rx="1.0" ry="0.42" fill="rgba(0,0,0,0.35)" />
           <ellipse rx="1.0" ry="0.42" fill={camisa} />
           <circle cx="-1.05" r="0.46" fill={cabelo} />
         </>
       ) : (
         <>
-          <ellipse
-            cx="0.35"
-            cy="0.35"
-            rx="0.55"
-            ry="1.05"
-            fill="rgba(0,0,0,0.35)"
-          />
+          <ellipse cx="0.35" cy="0.35" rx="0.55" ry="1.05" fill="rgba(0,0,0,0.35)" />
           {andando && (
             <>
-              <ellipse
-                cy="-0.3"
-                rx="0.35"
-                ry="0.2"
-                fill="#111827"
-                style={ani(true)}
-              />
-              <ellipse
-                cy="0.3"
-                rx="0.35"
-                ry="0.2"
-                fill="#111827"
-                style={ani(false)}
-              />
-              <ellipse
-                cy="-0.95"
-                rx="0.42"
-                ry="0.18"
-                fill={pele}
-                style={ani(false)}
-              />
-              <ellipse
-                cy="0.95"
-                rx="0.42"
-                ry="0.18"
-                fill={pele}
-                style={ani(true)}
-              />
+              <ellipse cy="-0.3" rx="0.35" ry="0.2" fill="#111827" style={ani(true)} />
+              <ellipse cy="0.3" rx="0.35" ry="0.2" fill="#111827" style={ani(false)} />
+              <ellipse cy="-0.95" rx="0.42" ry="0.18" fill={pele} style={ani(false)} />
+              <ellipse cy="0.95" rx="0.42" ry="0.18" fill={pele} style={ani(true)} />
             </>
           )}
           <ellipse rx="0.42" ry="0.95" fill={camisa} />
@@ -1424,11 +1164,15 @@ function Cena({
   congelado,
   drone,
   entidades,
+  feed,
+  semFundo,
 }: {
   modo: Modo;
   congelado: boolean;
   drone: { x: number; y: number };
   entidades: Entidade[];
+  feed?: ReactNode;
+  semFundo?: boolean;
 }) {
   const t = modo === "termico";
   const p = t ? PALETA_TERMICA : PALETA_RGB;
@@ -1438,6 +1182,8 @@ function Cena({
   const antena = ancoraMundo("obstaculo");
 
   return (
+    <>
+    {feed}
     <svg
       viewBox={`0 0 ${FOOT.w} ${FOOT.h}`}
       preserveAspectRatio="xMidYMid slice"
@@ -1447,6 +1193,7 @@ function Cena({
       }}
     >
       <defs>
+        <style>{`@keyframes swing{from{transform:translateX(-0.5px)}to{transform:translateX(0.5px)}}`}</style>
         <radialGradient id="heat">
           <stop offset="0%" stopColor="#fff7ae" />
           <stop offset="35%" stopColor="#fb923c" />
@@ -1460,7 +1207,6 @@ function Cena({
           <stop offset="0%" stopColor="#fef3c7" />
           <stop offset="100%" stopColor="#f59e0b" stopOpacity="0" />
         </radialGradient>
-        <style>{`@keyframes swing{from{transform:translateX(-0.5px)}to{transform:translateX(0.5px)}}`}</style>
       </defs>
 
       {/* o mundo inteiro desliza conforme o drone se move */}
@@ -1469,7 +1215,7 @@ function Cena({
           transform: `translate(${FOOT.w / 2 - drone.x}px, ${FOOT.h / 2 - drone.y}px)`,
         }}
       >
-        <Mundo p={p} />
+        {!semFundo && <Mundo p={p} />}
 
         {/* obstáculo (antena) */}
         <rect
@@ -1528,8 +1274,11 @@ function Cena({
         ))}
       </g>
     </svg>
+    </>
   );
 }
+
+/* ───────────── Mapa tático (simulado) ───────────── */
 
 function Glifo({ classe }: { classe: Classe }) {
   const f = "#fff";
@@ -1539,24 +1288,11 @@ function Glifo({ classe }: { classe: Classe }) {
       return (
         <g>
           <rect x="-5" y="-3" width="10" height="6" rx="1.8" fill={f} />
-          <rect
-            x="-2.6"
-            y="-2"
-            width="5"
-            height="4"
-            rx="0.8"
-            fill={k}
-            opacity="0.55"
-          />
+          <rect x="-2.6" y="-2" width="5" height="4" rx="0.8" fill={k} opacity="0.55" />
         </g>
       );
     case "calor":
-      return (
-        <path
-          d="M0 -6 C3 -2 5 0 5 3 A5 5 0 0 1 -5 3 C-5 0 -2 -1 0 -6Z"
-          fill={f}
-        />
-      );
+      return <path d="M0 -6 C3 -2 5 0 5 3 A5 5 0 0 1 -5 3 C-5 0 -2 -1 0 -6Z" fill={f} />;
     case "fumaca":
       return (
         <g fill={f}>
@@ -1586,33 +1322,15 @@ function Glifo({ classe }: { classe: Classe }) {
           <circle cx="0" cy="-3.6" r="2.2" />
           <path d="M-4.5 5.5 Q-4.5 -0.5 0 -0.5 Q4.5 -0.5 4.5 5.5Z" />
           {classe === "armado" && (
-            <rect
-              x="3"
-              y="0.5"
-              width="5.5"
-              height="1.8"
-              fill={k}
-              stroke={f}
-              strokeWidth="0.5"
-            />
+            <rect x="3" y="0.5" width="5.5" height="1.8" fill={k} stroke={f} strokeWidth="0.5" />
           )}
           {classe === "mandado" && (
-            <rect
-              x="3.4"
-              y="-6"
-              width="4"
-              height="4.6"
-              fill={k}
-              stroke={f}
-              strokeWidth="0.6"
-            />
+            <rect x="3.4" y="-6" width="4" height="4.6" fill={k} stroke={f} strokeWidth="0.6" />
           )}
         </g>
       );
   }
 }
-
-/* ───────────── Mapa tático (simulado) ───────────── */
 
 function ajustarCam(cx: number, cy: number, z: number) {
   const zz = clamp(z, ZOOM_MIN, ZOOM_MAX);
@@ -1668,14 +1386,9 @@ function MapaTatico({
     const down = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const alvo = e.target as HTMLElement | null;
-      if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA"))
-        return;
+      if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA")) return;
       const k = e.key.toLowerCase();
-      if (
-        ["arrowup", "arrowdown", "arrowleft", "arrowright", "j", "k"].includes(
-          k,
-        )
-      ) {
+      if (["arrowup", "arrowdown", "arrowleft", "arrowright", "j", "k"].includes(k)) {
         if (k.startsWith("arrow")) e.preventDefault();
         teclas.add(k);
       }
@@ -1693,10 +1406,8 @@ function MapaTatico({
       const dt = Math.min(0.05, (agora - ultimo) / 1000);
       ultimo = agora;
 
-      const dx =
-        (teclas.has("arrowright") ? 1 : 0) - (teclas.has("arrowleft") ? 1 : 0);
-      const dy =
-        (teclas.has("arrowdown") ? 1 : 0) - (teclas.has("arrowup") ? 1 : 0);
+      const dx = (teclas.has("arrowright") ? 1 : 0) - (teclas.has("arrowleft") ? 1 : 0);
+      const dy = (teclas.has("arrowdown") ? 1 : 0) - (teclas.has("arrowup") ? 1 : 0);
       const dz = (teclas.has("j") ? 1 : 0) - (teclas.has("k") ? 1 : 0);
 
       if (dx || dy || dz) {
@@ -1710,7 +1421,7 @@ function MapaTatico({
             ...ajustarCam(
               mexeu ? baseX + dx * v : c.cx,
               mexeu ? baseY + dy * v : c.cy,
-              c.z * Math.exp(dz * dt * 1.1),
+              c.z * Math.exp(dz * dt * 1.1)
             ),
             seguir: mexeu ? false : c.seguir,
           };
@@ -1758,9 +1469,7 @@ function MapaTatico({
                 key={s}
                 onClick={() => setEstilo(s)}
                 className={`px-2 py-1 capitalize transition ${
-                  estilo === s
-                    ? "bg-sky-500 text-slate-950"
-                    : "text-slate-400 hover:text-slate-200"
+                  estilo === s ? "bg-sky-500 text-slate-950" : "text-slate-400 hover:text-slate-200"
                 }`}
               >
                 {s === "ruas" ? "Ruas" : "Satélite"}
@@ -1776,11 +1485,7 @@ function MapaTatico({
                 : "border-slate-700 text-slate-400 hover:text-slate-200"
             }`}
           >
-            {revelar ? (
-              <Eye className="h-3.5 w-3.5" />
-            ) : (
-              <EyeOff className="h-3.5 w-3.5" />
-            )}
+            {revelar ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
             Entidades ocultas
           </button>
           <p className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
@@ -1790,7 +1495,8 @@ function MapaTatico({
               <kbd className={kbd}>↓</kbd>
               <kbd className={kbd}>→</kbd>
             </span>
-            mover ·<kbd className={kbd}>J</kbd> aproximar ·
+            mover ·
+            <kbd className={kbd}>J</kbd> aproximar ·
             <kbd className={kbd}>K</kbd> afastar
           </p>
         </div>
@@ -1803,10 +1509,10 @@ function MapaTatico({
           className="absolute inset-0 h-full w-full"
         >
           <Mundo
-            p={estilo === "ruas" ? PALETA_MAPA : PALETA_RGB}
-            grade={estilo === "ruas"}
-            rotulos
-          />
+  p={estilo === "ruas" ? PALETA_MAPA : PALETA_RGB}
+  grade={estilo === "ruas"}
+  rotulos
+/>
 
           {/* área vista pela câmera */}
           <g style={{ transform: `translate(${drone.x}px, ${drone.y}px)` }}>
@@ -1827,10 +1533,7 @@ function MapaTatico({
           {/* entidades ainda não detectadas (modo demonstração) */}
           {revelar &&
             ocultas.map((e) => (
-              <g
-                key={`o${e.id}`}
-                style={{ transform: `translate(${e.x}px, ${e.y}px)` }}
-              >
+              <g key={`o${e.id}`} style={{ transform: `translate(${e.x}px, ${e.y}px)` }}>
                 <g transform={`scale(${esc})`}>
                   <circle
                     r="5"
@@ -1860,42 +1563,16 @@ function MapaTatico({
                 <g transform={`scale(${esc})`}>
                   {c.especial && (
                     <circle r="12" fill="none" stroke={c.cor} strokeWidth="2">
-                      <animate
-                        attributeName="r"
-                        values="10;30"
-                        dur="1.4s"
-                        repeatCount="indefinite"
-                      />
-                      <animate
-                        attributeName="opacity"
-                        values="0.9;0"
-                        dur="1.4s"
-                        repeatCount="indefinite"
-                      />
+                      <animate attributeName="r" values="10;30" dur="1.4s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.9;0" dur="1.4s" repeatCount="indefinite" />
                     </circle>
                   )}
-                  <circle
-                    r={d.classe === "calor" ? 18 : 13}
-                    fill={c.cor}
-                    fillOpacity="0.18"
-                  />
-                  <circle
-                    r={c.especial ? 10 : 8.5}
-                    fill={c.cor}
-                    stroke="#0f172a"
-                    strokeWidth="1.5"
-                  />
+                  <circle r={d.classe === "calor" ? 18 : 13} fill={c.cor} fillOpacity="0.18" />
+                  <circle r={c.especial ? 10 : 8.5} fill={c.cor} stroke="#0f172a" strokeWidth="1.5" />
                   <g transform={`scale(${c.especial ? 0.95 : 0.8})`}>
                     <Glifo classe={d.classe} />
                   </g>
-                  {ativa && (
-                    <circle
-                      r="14"
-                      fill="none"
-                      stroke="#fff"
-                      strokeWidth="1.5"
-                    />
-                  )}
+                  {ativa && <circle r="14" fill="none" stroke="#fff" strokeWidth="1.5" />}
                   {(ativa || c.especial) && (
                     <text
                       x="16"
@@ -1920,18 +1597,8 @@ function MapaTatico({
             <g transform={`scale(${esc})`}>
               {online && (
                 <circle r="8" fill="none" stroke="#38bdf8" strokeWidth="1.5">
-                  <animate
-                    attributeName="r"
-                    values="8;20"
-                    dur="1.8s"
-                    repeatCount="indefinite"
-                  />
-                  <animate
-                    attributeName="opacity"
-                    values="0.8;0"
-                    dur="1.8s"
-                    repeatCount="indefinite"
-                  />
+                  <animate attributeName="r" values="8;20" dur="1.8s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.8;0" dur="1.8s" repeatCount="indefinite" />
                 </circle>
               )}
               <path
@@ -1984,9 +1651,7 @@ function MapaTatico({
           <button
             aria-label="Aproximar"
             title="Aproximar (J)"
-            onClick={() =>
-              setCam((c) => ({ ...c, ...ajustarCam(c.cx, c.cy, c.z * 1.25) }))
-            }
+            onClick={() => setCam((c) => ({ ...c, ...ajustarCam(c.cx, c.cy, c.z * 1.25) }))}
             className={botao}
           >
             <ZoomIn className="h-4 w-4" />
@@ -1994,9 +1659,7 @@ function MapaTatico({
           <button
             aria-label="Afastar"
             title="Afastar (K)"
-            onClick={() =>
-              setCam((c) => ({ ...c, ...ajustarCam(c.cx, c.cy, c.z / 1.25) }))
-            }
+            onClick={() => setCam((c) => ({ ...c, ...ajustarCam(c.cx, c.cy, c.z / 1.25) }))}
             className={botao}
           >
             <ZoomOut className="h-4 w-4" />
@@ -2146,31 +1809,28 @@ function Painel({
   const [deteccoes, setDeteccoes] = useState<Deteccao[]>(() => {
     const base = Date.now();
     return [
-      criarDeteccao(4, "obstaculo", {
-        hora: new Date(base - 1000),
-        confianca: 73,
-      }),
-      criarDeteccao(3, "pessoa", {
-        hora: new Date(base - 4000),
-        confianca: 84,
-      }),
+      criarDeteccao(4, "obstaculo", { hora: new Date(base - 1000), confianca: 73 }),
+      criarDeteccao(3, "pessoa", { hora: new Date(base - 4000), confianca: 84 }),
       criarDeteccao(2, "calor", { hora: new Date(base - 9000), confianca: 91 }),
-      criarDeteccao(1, "fumaca", {
-        hora: new Date(base - 14000),
-        confianca: 78,
-      }),
+      criarDeteccao(1, "fumaca", { hora: new Date(base - 14000), confianca: 78 }),
     ];
   });
 
   // entidades em movimento (a "verdade" do cenário simulado)
-  const [entidades, setEntidades] = useState<Entidade[]>(() => [
-    criarEntidade(1, "pessoa", HOME, true),
-    criarEntidade(2, "veiculo", HOME, false),
-    criarEntidade(3, "pessoa", HOME, true),
-  ]);
+  const [entidades, setEntidades] = useState<Entidade[]>(() => {
+    const ruas = ruasDoModo(MAPA_PADRAO_REAL);
+    return [
+      criarEntidade(1, "pessoa", HOME, true, ruas),
+      criarEntidade(2, "veiculo", HOME, false, ruas),
+      criarEntidade(3, "pessoa", HOME, true, ruas),
+    ];
+  });
   const [autoSpawn, setAutoSpawn] = useState(true);
   const [som, setSom] = useState(true);
   const [alerta, setAlerta] = useState<Alerta | null>(null);
+  const [mapaReal, setMapaReal] = useState(MAPA_PADRAO_REAL);
+  const [avisoMapa, setAvisoMapa] = useState(false);
+  const ruasRef = useRef(ruasDoModo(MAPA_PADRAO_REAL));
 
   const [selecionada, setSelecionada] = useState<number | null>(null);
   const [filtro, setFiltro] = useState<"todos" | "pendentes">("todos");
@@ -2190,6 +1850,7 @@ function Painel({
     vooRef.current = voo;
     entRef.current = entidades;
     somRef.current = som;
+    ruasRef.current = ruasDoModo(mapaReal);
   });
 
   /* Limpa timeouts ao sair da página */
@@ -2205,8 +1866,7 @@ function Painel({
     const down = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const alvo = e.target as HTMLElement | null;
-      if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA"))
-        return;
+      if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA")) return;
       const k = e.key.toLowerCase();
       if (!["w", "a", "s", "d"].includes(k)) return;
       teclas.current.add(k);
@@ -2257,7 +1917,7 @@ function Painel({
 
         setVoo((v) => passoVoo(v, dx, dy, passo, alvoPos));
         setEntidades((es) =>
-          es.some((e) => e.v > 0) ? es.map((e) => moverEntidade(e, passo)) : es,
+          es.some((e) => e.v > 0) ? es.map((e) => moverEntidade(e, passo, ruasRef.current)) : es
         );
       }
       raf = requestAnimationFrame(loop);
@@ -2287,45 +1947,32 @@ function Painel({
             const a = CLASSES[d.classe].ancora;
             return {
               ...d,
-              x: clamp(
-                d.x + (a.x - d.x) * 0.08 + (Math.random() - 0.5) * 0.9,
-                8,
-                92,
-              ),
-              y: clamp(
-                d.y + (a.y - d.y) * 0.08 + (Math.random() - 0.5) * 0.9,
-                10,
-                90,
-              ),
+              x: clamp(d.x + (a.x - d.x) * 0.08 + (Math.random() - 0.5) * 0.9, 8, 92),
+              y: clamp(d.y + (a.y - d.y) * 0.08 + (Math.random() - 0.5) * 0.9, 10, 90),
             };
-          }),
+          })
         );
 
         const v = vooRef.current;
 
         // spawn automático: novas entidades surgem fora da área da câmera
         if (autoSpawn && n % 6 === 0 && entRef.current.length < MAX_ENT) {
-          const nova = criarEntidade(
-            proxEnt.current++,
-            tipoAleatorio(),
-            v,
-            false,
-          );
+          const nova = criarEntidade(proxEnt.current++, tipoAleatorio(), v, false, ruasRef.current);
           setEntidades((es) => [...es, nova]);
         }
 
         // a IA só comenta uma entidade quando ela entra na área da câmera
         const novas = entRef.current.filter(
-          (e) => !e.detectada && dentroDaCamera(e, v),
+          (e) => !e.detectada && dentroDaCamera(e, v)
         );
         if (novas.length) {
           const dets = novas.map((e) =>
-            criarDeteccaoEntidade(proxId.current++, e, v),
+            criarDeteccaoEntidade(proxId.current++, e, v)
           );
           const ids = new Set(novas.map((e) => e.id));
           setDeteccoes((prev) => [...dets, ...prev].slice(0, 40));
           setEntidades((es) =>
-            es.map((e) => (ids.has(e.id) ? { ...e, detectada: true } : e)),
+            es.map((e) => (ids.has(e.id) ? { ...e, detectada: true } : e))
           );
 
           // alerta visual e sonoro para alvos especiais
@@ -2377,9 +2024,7 @@ function Painel({
     setConexao("sincronizando");
     syncTimeout.current = setTimeout(() => {
       const recuperadas = Array.from({ length: qtd }, () =>
-        criarDeteccao(proxId.current++, classeAleatoria(), {
-          sincronizado: true,
-        }),
+        criarDeteccao(proxId.current++, classeAleatoria(), { sincronizado: true })
       );
       setDeteccoes((prev) => [...recuperadas, ...prev].slice(0, 40));
       setPendentesBuffer(0);
@@ -2414,14 +2059,9 @@ function Painel({
 
   // gera uma entidade já dentro da área da câmera (demonstração)
   function gerar(tipo: TipoEntidade) {
-    const nova = criarEntidade(
-      proxEnt.current++,
-      tipo,
-      { x: voo.x, y: voo.y },
-      true,
-    );
+    const nova = criarEntidade(proxEnt.current++, tipo, { x: voo.x, y: voo.y }, true, ruasRef.current);
     setEntidades((es) =>
-      es.length >= MAX_ENT ? [...es.slice(1), nova] : [...es, nova],
+      es.length >= MAX_ENT ? [...es.slice(1), nova] : [...es, nova]
     );
   }
 
@@ -2429,10 +2069,31 @@ function Painel({
     setEntidades([]);
   }
 
+  function alternarMapa(real: boolean) {
+    const ruas = ruasDoModo(real);
+    ruasRef.current = ruas;
+    setMapaReal(real);
+    setEntidades([
+      criarEntidade(proxEnt.current++, "pessoa", { x: voo.x, y: voo.y }, true, ruas),
+      criarEntidade(proxEnt.current++, "veiculo", { x: voo.x, y: voo.y }, false, ruas),
+    ]);
+    setDeteccoes((prev) => prev.filter((d) => d.entidadeId == null));
+    setAlerta(null);
+    setSelecionada(null);
+    setVoo((v) => (v.modo === "seguir" ? { ...v, modo: "manual" } : v));
+  }
+
+  const alternarRef = useRef(alternarMapa);
+  useEffect(() => {
+    alternarRef.current = alternarMapa;
+  });
+  const onFalhaMapa = useCallback(() => {
+    alternarRef.current(false);
+    setAvisoMapa(true);
+  }, []);
+
   function definirStatus(id: number, status: Status) {
-    setDeteccoes((prev) =>
-      prev.map((d) => (d.id === id ? { ...d, status } : d)),
-    );
+    setDeteccoes((prev) => prev.map((d) => (d.id === id ? { ...d, status } : d)));
   }
 
   function selecionar(id: number) {
@@ -2450,7 +2111,7 @@ function Painel({
   const entPorId = new Map(entidades.map((e) => [e.id, e] as const));
   const qtdPendentes = deteccoes.filter((d) => d.status === "pendente").length;
   const especiaisPendentes = deteccoes.filter(
-    (d) => CLASSES[d.classe].especial && d.status === "pendente",
+    (d) => CLASSES[d.classe].especial && d.status === "pendente"
   ).length;
   const naoDescartadas = deteccoes.filter((d) => d.status !== "descartado");
 
@@ -2460,6 +2121,24 @@ function Painel({
   });
   const ocultas = entidades.filter((e) => !e.detectada);
   const detectadas = entidades.length - ocultas.length;
+
+  const marcadoresGL: MarcadorMapa[] = marcadores.map(({ d, pos }) => ({
+    id: d.id,
+    x: pos.x,
+    y: pos.y,
+    cor: CLASSES[d.classe].cor,
+    classe: d.classe,
+    curto: CLASSES[d.classe].curto,
+    especial: !!CLASSES[d.classe].especial,
+    confianca: d.confianca,
+    ativa: selecionada === d.id,
+  }));
+  const ocultasGL: OcultaMapa[] = ocultas.map((e) => ({
+    id: e.id,
+    x: e.x,
+    y: e.y,
+    cor: CLASSES[e.tipo].cor,
+  }));
 
   // só aparecem no vídeo as detecções que estão dentro da área da câmera
   const caixas = naoDescartadas
@@ -2472,9 +2151,7 @@ function Painel({
       ? deteccoes.filter((d) => d.status === "pendente")
       : deteccoes;
 
-  const cpfMascarado = cpf
-    ? `${cpf.slice(0, 3)}.***.***-${cpf.slice(-2)}`
-    : "—";
+  const cpfMascarado = cpf ? `${cpf.slice(0, 3)}.***.***-${cpf.slice(-2)}` : "—";
 
   const banner = {
     online: {
@@ -2581,10 +2258,7 @@ function Painel({
                   style={{ color: classeAlerta.cor }}
                 />
                 <span>
-                  <span
-                    className="font-bold tracking-wide"
-                    style={{ color: classeAlerta.cor }}
-                  >
+                  <span className="font-bold tracking-wide" style={{ color: classeAlerta.cor }}>
                     ALVO ESPECIAL
                   </span>{" "}
                   · {classeAlerta.label} · setor {alerta.setor}
@@ -2658,6 +2332,19 @@ function Painel({
               congelado={!online}
               drone={drone}
               entidades={entidades}
+              semFundo={mapaReal}
+              feed={
+                mapaReal ? (
+                  <FeedSatelite
+                    drone={drone}
+                    paraGeo={paraGeo}
+                    metrosLargura={FOOT.w}
+                    congelado={!online}
+                    termico={modo === "termico"}
+                    onFalha={onFalhaMapa}
+                  />
+                ) : undefined
+              }
             />
 
             {/* scanlines + vinheta */}
@@ -2712,8 +2399,8 @@ function Painel({
                     boxShadow: ativa
                       ? `0 0 0 2px #fff, 0 0 18px ${c.cor}`
                       : c.especial
-                        ? `0 0 14px ${c.cor}`
-                        : undefined,
+                      ? `0 0 14px ${c.cor}`
+                      : undefined,
                     opacity: online ? 1 : 0.6,
                   }}
                 >
@@ -2768,6 +2455,12 @@ function Painel({
               {ROTULO_MODO[voo.modo]}
             </div>
 
+            {mapaReal && (
+              <div className="pointer-events-none absolute left-1/2 top-1 -translate-x-1/2 text-[9px] text-white/50">
+                Imagens © Esri, Maxar, Earthstar Geographics
+              </div>
+            )}
+
             {!online && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/30">
                 <span className="rounded-lg border border-red-500/40 bg-black/70 px-4 py-2 text-sm font-medium text-red-300">
@@ -2787,8 +2480,7 @@ function Painel({
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="min-w-[14rem] flex-1">
                 <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
-                  <Gamepad2 className="h-4 w-4 text-sky-400" /> Controle do
-                  drone
+                  <Gamepad2 className="h-4 w-4 text-sky-400" /> Controle do drone
                 </h3>
                 <div className="flex gap-1 rounded-lg bg-slate-950 p-1 text-xs">
                   {MODOS.map(({ id, rotulo, Icon }) => (
@@ -2810,8 +2502,8 @@ function Painel({
                   {!online
                     ? "Comandos indisponíveis sem conexão. O drone mantém a posição até o link voltar."
                     : voo.modo === "seguir"
-                      ? "Seguindo um alvo. Pressione W A S D para assumir o controle manual."
-                      : "Pilote com W A S D (ou segure os botões ao lado). Qualquer comando retoma o controle manual."}
+                    ? "Seguindo um alvo. Pressione W A S D para assumir o controle manual."
+                    : "Pilote com W A S D (ou segure os botões ao lado). Qualquer comando retoma o controle manual."}
                 </p>
               </div>
 
@@ -2828,9 +2520,7 @@ function Painel({
               <div className="min-w-[8rem] space-y-1 font-mono text-xs text-slate-400">
                 <p>
                   Velocidade{" "}
-                  <span className="text-slate-100">
-                    {velocidade.toFixed(1)} m/s
-                  </span>
+                  <span className="text-slate-100">{velocidade.toFixed(1)} m/s</span>
                 </p>
                 <p>
                   Posição{" "}
@@ -2863,6 +2553,33 @@ function Painel({
               <p className="font-mono text-xs text-slate-400">
                 Entidades {entidades.length}/{MAX_ENT} · detectadas {detectadas}
               </p>
+            </div>
+
+            <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
+              <span className="text-slate-400">Mapa:</span>
+              <div className="flex overflow-hidden rounded-md border border-slate-700">
+                {([true, false] as const).map((real) => (
+                  <button
+                    key={String(real)}
+                    onClick={() => { setAvisoMapa(false); alternarMapa(real); }}
+                    className={`px-3 py-1 transition ${
+                      mapaReal === real ? "bg-sky-500 font-medium text-slate-950" : "text-slate-300 hover:bg-slate-800"
+                    }`}
+                  >
+                    {real ? "Real" : "Clássico"}
+                  </button>
+                ))}
+              </div>
+              {mapaReal && RUAS_REAIS.length === 0 && (
+                <span className="text-amber-300/90">
+                  Dica: rode <code>node scripts/baixar-ruas.mjs</code> para os NPCs seguirem as ruas reais.
+                </span>
+              )}
+              {avisoMapa && (
+                <span className="text-red-300">
+                  Mapas indisponíveis (sem internet?). Voltamos ao mapa clássico.
+                </span>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -2922,15 +2639,29 @@ function Painel({
 
           {/* Mapa tático */}
           <div className="mx-auto w-full" style={LARGURA}>
-            <MapaTatico
-              drone={drone}
-              rotulo={droneId}
-              online={online}
-              marcadores={marcadores}
-              ocultas={ocultas}
-              selecionada={selecionada}
-              onSelecionar={selecionar}
-            />
+            {mapaReal ? (
+              <MapaReal
+                drone={drone}
+                paraGeo={paraGeo}
+                foot={FOOT}
+                rotulo={droneId}
+                online={online}
+                marcadores={marcadoresGL}
+                ocultas={ocultasGL}
+                onSelecionar={selecionar}
+                onFalha={onFalhaMapa}
+              />
+            ) : (
+              <MapaTatico
+                drone={drone}
+                rotulo={droneId}
+                online={online}
+                marcadores={marcadores}
+                ocultas={ocultas}
+                selecionada={selecionada}
+                onSelecionar={selecionar}
+              />
+            )}
           </div>
 
           {/* Telemetria */}
@@ -2976,9 +2707,7 @@ function Painel({
                 } ${online ? "" : "opacity-50"}`}
               >
                 <div className="mb-1 flex items-center gap-1.5 text-xs text-slate-400">
-                  <Icon
-                    className={`h-3.5 w-3.5 ${alertaBat ? "text-red-400" : ""}`}
-                  />
+                  <Icon className={`h-3.5 w-3.5 ${alertaBat ? "text-red-400" : ""}`} />
                   {label}
                 </div>
                 <p
@@ -3010,8 +2739,7 @@ function Painel({
                 {especiaisPendentes > 0 && (
                   <span className="flex animate-pulse items-center gap-1 rounded-full bg-red-500/20 px-2.5 py-0.5 text-xs font-semibold text-red-300">
                     <Siren className="h-3 w-3" />
-                    {especiaisPendentes} alvo
-                    {especiaisPendentes === 1 ? "" : "s"} especia
+                    {especiaisPendentes} alvo{especiaisPendentes === 1 ? "" : "s"} especia
                     {especiaisPendentes === 1 ? "l" : "is"}
                   </span>
                 )}
@@ -3061,8 +2789,7 @@ function Painel({
               const c = CLASSES[d.classe];
               const p = PRIORIDADES[d.prioridade];
               const ativa = selecionada === d.id;
-              const seguivel =
-                d.entidadeId != null && entPorId.has(d.entidadeId);
+              const seguivel = d.entidadeId != null && entPorId.has(d.entidadeId);
               return (
                 <li
                   key={d.id}
