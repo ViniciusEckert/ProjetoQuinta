@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Map as MapaGL, Marker } from "maplibre-gl";
+import { Map as MapaGL, Marker, setWorkerUrl } from "maplibre-gl";
 import type { GeoJSONSource, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Eye, EyeOff, LocateFixed, MapPin, ZoomIn, ZoomOut } from "lucide-react";
@@ -25,6 +25,10 @@ export interface OcultaMapa {
   y: number;
   cor: string;
 }
+
+// No Next.js o MapLibre não acha o próprio worker sozinho: ele é servido de /public
+// (copiado por scripts/copiar-worker.mjs).
+setWorkerUrl("/maplibre-gl-worker.mjs");
 
 const URL_RUAS = "https://tiles.openfreemap.org/styles/liberty";
 const ESTILO_SATELITE: StyleSpecification = {

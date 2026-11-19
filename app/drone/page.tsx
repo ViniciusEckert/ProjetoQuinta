@@ -54,6 +54,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { FeedSatelite, MapaReal } from "./mapas";
+import Cena3D, { webglOk } from "./cena3d";
 import type { MarcadorMapa, OcultaMapa } from "./mapas";
 import ruasJson from "./ruas.json";
 
@@ -1166,6 +1167,8 @@ function Cena({
   entidades,
   feed,
   semFundo,
+  vista3d,
+  onErro3d,
 }: {
   modo: Modo;
   congelado: boolean;
@@ -1173,6 +1176,8 @@ function Cena({
   entidades: Entidade[];
   feed?: ReactNode;
   semFundo?: boolean;
+  vista3d?: boolean;
+  onErro3d?: () => void;
 }) {
   const t = modo === "termico";
   const p = t ? PALETA_TERMICA : PALETA_RGB;
@@ -1217,7 +1222,9 @@ function Cena({
       >
         {!semFundo && <Mundo p={p} />}
 
-        {/* obstáculo (antena) */}
+        {/* obstáculo (antena) — no modo 3D vira modelo 3D */}
+        {!vista3d && (
+          <>
         <rect
           x={antena.x - 0.9}
           y={antena.y - 3}
@@ -1232,6 +1239,8 @@ function Cena({
           height="0.8"
           fill={t ? "#3a2c80" : "#d1d5db"}
         />
+          </>
+        )}
 
         {/* foco de calor */}
         <circle
@@ -1252,7 +1261,9 @@ function Cena({
           opacity={t ? 0.1 : 0.85}
         />
 
-        {/* pessoa fixa da cena */}
+        {/* pessoa fixa da cena (no modo 3D é um modelo 3D) */}
+        {!vista3d && (
+          <>
         <circle cx={pessoa.x} cy={pessoa.y} r={t ? 2.5 : 0} fill="url(#body)" />
         <ellipse
           cx={pessoa.x}
@@ -1267,13 +1278,36 @@ function Cena({
           r="0.55"
           fill={t ? "#fef3c7" : "#fecaca"}
         />
+          </>
+        )}
 
         {/* entidades em movimento */}
-        {entidades.map((e) => (
-          <EntidadeSvg key={e.id} e={e} t={t} pausado={congelado} />
-        ))}
+        {!vista3d &&
+          entidades.map((e) => (
+            <EntidadeSvg key={e.id} e={e} t={t} pausado={congelado} />
+          ))}
       </g>
     </svg>
+    {vista3d && (
+      <Cena3D
+        drone={drone}
+        foot={FOOT}
+        termico={t}
+        congelado={congelado}
+        obstaculo={antena}
+        cores={{
+          armado: CLASSES.armado.cor,
+          mandado: CLASSES.mandado.cor,
+          ferido: CLASSES.ferido.cor,
+        }}
+        entidades={[
+          ...entidades,
+          // pessoa fixa da cena
+          { id: 9999, tipo: "pessoa", x: pessoa.x, y: pessoa.y, ang: 90, v: 0, detectada: true },
+        ]}
+        onErro={onErro3d ?? (() => {})}
+      />
+    )}
     </>
   );
 }
@@ -1829,6 +1863,8 @@ function Painel({
   const [som, setSom] = useState(true);
   const [alerta, setAlerta] = useState<Alerta | null>(null);
   const [mapaReal, setMapaReal] = useState(MAPA_PADRAO_REAL);
+  const [modelos3d, setModelos3d] = useState(() => webglOk());
+  const [aviso3d, setAviso3d] = useState(false);
   const [avisoMapa, setAvisoMapa] = useState(false);
   const ruasRef = useRef(ruasDoModo(MAPA_PADRAO_REAL));
 
@@ -2067,6 +2103,8 @@ function Painel({
 
   function limparEntidades() {
     setEntidades([]);
+    setDeteccoes((prev) => prev.filter((d) => d.entidadeId == null));
+    setAlerta(null);
   }
 
   function alternarMapa(real: boolean) {
@@ -2082,6 +2120,11 @@ function Painel({
     setSelecionada(null);
     setVoo((v) => (v.modo === "seguir" ? { ...v, modo: "manual" } : v));
   }
+
+  const onErro3d = useCallback(() => {
+    setModelos3d(false);
+    setAviso3d(true);
+  }, []);
 
   const alternarRef = useRef(alternarMapa);
   useEffect(() => {
@@ -2333,6 +2376,8 @@ function Painel({
               drone={drone}
               entidades={entidades}
               semFundo={mapaReal}
+            vista3d={modelos3d}
+            onErro3d={onErro3d}
               feed={
                 mapaReal ? (
                   <FeedSatelite
@@ -2578,6 +2623,33 @@ function Painel({
               {avisoMapa && (
                 <span className="text-red-300">
                   Mapas indisponíveis (sem internet?). Voltamos ao mapa clássico.
+                </span>
+              )}
+            </div>
+
+            <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
+              <span className="text-slate-400">Modelos:</span>
+              <div className="flex overflow-hidden rounded-md border border-slate-700">
+                {([true, false] as const).map((on) => (
+                  <button
+                    key={String(on)}
+                    onClick={() => {
+                      setAviso3d(false);
+                      setModelos3d(on && webglOk());
+                    }}
+                    className={`px-3 py-1 transition ${
+                      modelos3d === on
+                        ? "bg-sky-500 font-medium text-slate-950"
+                        : "text-slate-300 hover:bg-slate-800"
+                    }`}
+                  >
+                    {on ? "3D" : "2D"}
+                  </button>
+                ))}
+              </div>
+              {aviso3d && (
+                <span className="text-red-300">
+                  WebGL indisponível neste navegador. Voltamos aos modelos 2D.
                 </span>
               )}
             </div>
